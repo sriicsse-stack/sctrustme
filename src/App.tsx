@@ -56,7 +56,10 @@ import DeploymentConsole from "./components/DeploymentConsole";
 import ProjectHistory from "./components/ProjectHistory";
 import PricingPage from "./components/PricingPage";
 import SriAICore from "./components/SriAICore";
+import SupabaseAuth from "./components/SupabaseAuth";
 import { ProjectDetails, ProjectSummary } from "./types";
+import { supabase } from "./lib/supabase";
+
 
 // Custom fetch helper that transparently adds Authorization and x-google-auth-session headers
 // for sandbox/iframe environment stability without trying to overwrite the read-only window.fetch.
@@ -161,6 +164,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisReport, setAnalysisReport] = useState<any | null>(null);
   const [selectedSize, setSelectedSize] = useState<"Small" | "Medium" | "Large">("Medium");
+  const [supabaseSession, setSupabaseSession] = useState<any>(null);
 
   // Sri AI Doubt Assistant chatbot states
   const [sriChat, setSriChat] = useState<Array<{
@@ -235,6 +239,31 @@ export default function App() {
   const addSimulatedLog = (message: string, level: "log" | "info" | "warn" | "error" = "log") => {
     const timestamp = new Date().toLocaleTimeString(undefined, { hour12: false, hour: "numeric", minute: "2-digit", second: "2-digit" });
     setSimulatedLogs(prev => [...prev, { message, timestamp, level }]);
+  };
+
+  const convertSupabaseSessionToLegacyUser = (session: any) => {
+    if (!session?.user) return null;
+
+    const user = session.user;
+    return {
+      name: user.user_metadata?.full_name || user.email || "Supabase User",
+      email: user.email || "",
+      picture: user.user_metadata?.avatar_url || "",
+      googleId: user.id,
+      expiresAt: session.expires_at ? new Date(session.expires_at * 1000).toISOString() : new Date(Date.now() + 3600 * 1000).toISOString(),
+    };
+  };
+
+  const handleSupabaseSessionChange = (session: any) => {
+    if (!session) {
+      setSupabaseSession(null);
+      setUserState(prev => ({ ...prev, user: null }));
+      return;
+    }
+
+    const legacyUser = convertSupabaseSessionToLegacyUser(session);
+    setSupabaseSession(session);
+    setUserState(prev => ({ ...prev, user: legacyUser }));
   };
 
   const handleExecuteConsoleSnippet = () => {
@@ -720,52 +749,19 @@ export default function App() {
   const handleLoginStart = async () => {
     try {
       setOauthError(null);
-      console.log("Triggering Google OAuth login flow...");
+      console.log("Triggering Supabase Google OAuth login flow...");
 
-      const configRes = await fetch("/api/auth/google-url");
-      const configData = await configRes.json();
-      if (configData.error) {
-        console.error("OAuth failure fetching configuration:", configData.error);
-        setOauthError(configData.error);
-        return;
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: "https://sctrustme.vercel.app",
+        },
+      });
+
+      if (error) {
+        console.error("OAuth failure with Supabase:", error);
+        setOauthError(error.message || "Google OAuth login failed.");
       }
-      if (!configData.url) {
-        throw new Error("Google auth URL could not be constructed.");
-      }
-
-      console.log("Opening backend-hosted Google OAuth popup...");
-      const width = 600;
-      const height = 700;
-      const left = window.screen.width / 2 - width / 2;
-      const top = window.screen.height / 2 - height / 2;
-
-      const popup = window.open(
-        configData.url,
-        "google_oauth_popup",
-        `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes`
-      );
-
-      if (!popup) {
-        console.error("OAuth failure: Popup windows are blocked by browser settings");
-        setOauthError("Popup was blocked by your browser. Please enable popups for this site.");
-        return;
-      }
-
-      authPopupRef.current = popup;
-      authPopupIntervalRef.current = window.setInterval(() => {
-        try {
-          if (!authPopupRef.current || authPopupRef.current.closed) {
-            if (authPopupIntervalRef.current) {
-              window.clearInterval(authPopupIntervalRef.current);
-              authPopupIntervalRef.current = null;
-            }
-            authPopupRef.current = null;
-            fetchUserState();
-          }
-        } catch (popupErr) {
-          console.warn("OAuth popup cross-origin state check failed, will retry:", popupErr);
-        }
-      }, 500);
     } catch (err: any) {
       console.error("OAuth failure initiating login flow:", err?.message || err);
       setOauthError(`Could not trigger Google Login: ${err?.message || "Unknown error"}`);
@@ -775,11 +771,21 @@ export default function App() {
   const handleLogout = async () => {
     try {
       console.log("Logging out active user...");
-      await fetch("/api/auth/logout", { method: "POST" });
+      
+      // Use Supabase logout
+      const { error } = await supabase.auth.signOut();
+      
+      if (error) {
+        console.error("Supabase logout error:", error);
+      }
+      
+      // Clear local storage
       localStorage.removeItem("google_auth_session");
       localStorage.removeItem("google_auth_user");
       console.log("Session saved data cleared from localStorage");
+      
       setOauthError(null);
+      setSupabaseSession(null);
       setUserState(prev => ({
         ...prev,
         user: null
@@ -1865,6 +1871,12 @@ export default function App() {
         oauthError={oauthError}
         clearOauthError={() => setOauthError(null)}
         offerActive={offerSecondsLeft !== null && offerSecondsLeft > 0 && !userState.offerRedeemed}
+      />
+
+      <SupabaseAuth
+        currentUser={supabaseSession}
+        onSessionChange={handleSupabaseSessionChange}
+        onError={(message) => setOauthError(message)}
       />
 
       {/* PRIMARY CONTEXT WINDOWS */}

@@ -470,145 +470,17 @@ app.get("/api/user-state", (req, res) => {
   });
 });
 
-// API: Get Google OAuth Authorization URL
-app.get("/api/auth/google-url", (req, res) => {
-  try {
-    let appUrl = (process.env.APP_URL || "").trim().replace(/\/$/, "");
-    if (!appUrl || appUrl === "MY_APP_URL" || appUrl.includes("PLACEHOLDER")) {
-      // Robust auto-detect fallback so it NEVER blocks user testing by throwing!
-      const host = req.get("host") || "localhost:3000";
-      const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
-      appUrl = `${proto}://${host}`;
-    }
-    
-    if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID === "YOUR_GOOGLE_CLIENT_ID" || GOOGLE_CLIENT_ID.includes("PLACEHOLDER")) {
-      throw new Error("Google Client ID is missing or has a default placeholder value.");
-    }
-    
-    const redirectUri = `${appUrl}/auth/callback`;
-    const params = new URLSearchParams({
-      client_id: GOOGLE_CLIENT_ID,
-      redirect_uri: redirectUri,
-      response_type: "code",
-      scope: "openid email profile",
-      access_type: "offline",
-      prompt: "select_account"
-    });
-    
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-    res.json({ url: authUrl, clientId: GOOGLE_CLIENT_ID, redirectUri });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to construct the secure authorization URL" });
-  }
-});
-
+// NOTE: Google OAuth is now handled entirely by Supabase.
+// Custom endpoints have been removed.
+// Use supabase.auth.signInWithOAuth({ provider: 'google' })
+// ========================================================================
 // API: Get Google OAuth Audit Diagnostics & Live Info
+// Audit info endpoint is deprecated - OAuth is now handled by Supabase
 app.get("/api/auth/audit-info", (req, res) => {
-  try {
-    const rawAppUrl = (process.env.APP_URL || "").trim();
-    const appReferer = req.headers.referer || "";
-    let detectedOrigin = "";
-    if (appReferer) {
-      try {
-        detectedOrigin = new URL(appReferer).origin;
-      } catch (e) {}
-    }
-    const host = req.get("host") || "localhost:3000";
-    const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
-    const requestOrigin = `${proto}://${host}`;
-
-    // Priority for active origin
-    const activeOrigin = (rawAppUrl && rawAppUrl !== "MY_APP_URL") ? rawAppUrl.replace(/\/$/, "") : (detectedOrigin || requestOrigin);
-
-    // Hardcoded static references matching deployment URLs
-    const devAppUrl = "https://ais-dev-aqq74zyitlpmdcefxyyxer-310734821409.asia-southeast1.run.app";
-    const sharedAppUrl = "https://ais-pre-aqq74zyitlpmdcefxyyxer-310734821409.asia-southeast1.run.app";
-    const localAppUrl = "http://localhost:3000";
-
-    const isIframe = appReferer.includes("ai.studio") || appReferer.includes("preview") || !req.headers["sec-fetch-dest"] || req.headers["sec-fetch-dest"] === "iframe";
-
-    // Build the diagnostic report status
-    const requirements = [
-      {
-        id: "origin_detection",
-        name: "Detect Exact Current Running Domain/Origin",
-        status: activeOrigin ? "PASS" : "FAIL",
-        notes: `Your active application origin detected is: ${activeOrigin}`
-      },
-      {
-        id: "js_origin_setup",
-        name: "Authorized JavaScript Origins Whitelisting",
-        status: "PASS",
-        notes: `Add these exact Authorized Origins into your GCP Credentials console:\n1. ${devAppUrl}\n2. ${sharedAppUrl}\n3. ${localAppUrl}`
-      },
-      {
-        id: "client_id_valid",
-        name: "Verify Google Client ID is Valid & Configured",
-        status: (GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_ID.includes("PLACEHOLDER") && GOOGLE_CLIENT_ID.length > 20) ? "PASS" : "FAIL",
-        notes: GOOGLE_CLIENT_ID ? `Active Client ID is: ${GOOGLE_CLIENT_ID.substring(0, 15)}...` : "Client ID is missing or using an empty placeholder."
-      },
-      {
-        id: "client_type",
-        name: "Verify OAuth Client Type is 'Web Application'",
-        status: (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_ID.endsWith(".apps.googleusercontent.com")) ? "PASS" : "FAIL",
-        notes: GOOGLE_CLIENT_ID && GOOGLE_CLIENT_ID.endsWith(".apps.googleusercontent.com") 
-          ? "Client ID has the valid '.apps.googleusercontent.com' suffix."
-          : "Invalid suffix. Verify that your Client ID in GCP Console was created as a 'Web Application' client type!"
-      },
-      {
-        id: "client_secrets",
-        name: "Verify Google Client Secrets Configuration",
-        status: (GOOGLE_CLIENT_SECRET && !GOOGLE_CLIENT_SECRET.includes("PLACEHOLDER") && GOOGLE_CLIENT_SECRET !== "PLACEHOLDER_GOOGLE_CLIENT_SECRET") ? "CUSTOM_PASS" : "FALLBACK_WARNING",
-        notes: GOOGLE_CLIENT_SECRET === "PLACEHOLDER_GOOGLE_CLIENT_SECRET"
-          ? "Using the shared default system Client ID and Secret fallback. This default client has no dynamic authorized origins for this spawned run! Please save your custom credentials below."
-          : `Custom Client Secret active: ${GOOGLE_CLIENT_SECRET.substring(0, 8)}...`
-      },
-      {
-        id: "consent_screen",
-        name: "Verify OAuth Consent Screen Configuration",
-        status: "WARNING",
-        notes: "Remember: Ensure that you configure the OAuth Consent Screen in your Google Cloud Project with the User Type set to 'External' and Publishing status in 'Testing' (if using test accounts) or 'In Production' so users can sign in without restriction."
-      },
-      {
-        id: "test_users",
-        name: "Verify Test Users (if in Testing Mode)",
-        status: "WARNING",
-        notes: "GCP projects in 'Testing' phase require your specific user email (e.g. charusri1315@gmail.com) is explicitly added in 'Test Users' on the Consent Screen tab."
-      },
-      {
-        id: "client_id_mismatch",
-        name: "Check for Client ID Mismatches",
-        status: "PASS",
-        notes: "Dynamic Sync Active! The frontend React code automatically reads the active Client ID from the server, eliminating any code-level hardcoding discrepancies."
-      },
-      {
-        id: "iframe_restrictions",
-        name: "Detect Google AI Studio Iframe Restrictions",
-        status: isIframe ? "WARNING" : "PASS",
-        notes: isIframe
-          ? "Running inside a sandboxed iframe. Note: Direct GSI OneTap buttons are blocked inside sandboxed frames. Our system automatically falls back to secure popup-based redirects using postMessage!"
-          : "Running in top-level tab. GSI OneTap and Redirect flow fully accessible."
-      }
-    ];
-
-    res.json({
-      activeOrigin,
-      activeClientId: GOOGLE_CLIENT_ID,
-      activeClientSecretMasked: GOOGLE_CLIENT_SECRET ? `${GOOGLE_CLIENT_SECRET.substring(0, 10)}...` : "",
-      reqOrigin: requestOrigin,
-      refererOrigin: detectedOrigin,
-      devAppUrl,
-      sharedAppUrl,
-      localAppUrl,
-      isIframe,
-      requirements,
-      usingDefaultCredentials: GOOGLE_CLIENT_ID === "PLACEHOLDER_GOOGLE_CLIENT_ID"
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to audit credentials" });
-  }
+  res.json({ message: "OAuth is now handled by Supabase. No audit needed." });
 });
 
+// ========================================================================
 // API: Create Razorpay Order (Test Mode)
 app.post("/api/razorpay/create-order", async (req, res) => {
   try {
@@ -897,170 +769,20 @@ app.post("/api/auth/reset-config", (req, res) => {
 });
 
 // API: Google OAuth Callback Handler redirect
+// OAuth callback is now handled by Supabase - this endpoint is deprecated
 app.get(["/auth/callback", "/auth/callback/"], async (req, res) => {
-  const { code, error } = req.query;
-  
-  if (error) {
-    return res.status(400).send(renderPopupHtml(null, `Google identity consent error: ${error}`));
-  }
-  
-  if (!code) {
-    return res.status(400).send(renderPopupHtml(null, "Authorization code query parameter is missing from Google redirect."));
-  }
-  
-  try {
-    let appUrl = (process.env.APP_URL || "").trim().replace(/\/$/, "");
-    if (!appUrl || appUrl === "MY_APP_URL" || appUrl.includes("PLACEHOLDER")) {
-      const host = req.get("host") || "localhost:3000";
-      const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
-      appUrl = `${proto}://${host}`;
-    }
-    const redirectUri = `${appUrl}/auth/callback`;
-    
-    // Exchange authorize code for access and id tokens
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code: code as string,
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code"
-      })
-    });
-    
-    if (!tokenRes.ok) {
-      const errorText = await tokenRes.text();
-      let parsedErr: any;
-      try { parsedErr = JSON.parse(errorText); } catch (e) {}
-      const errMsg = parsedErr?.error_description || parsedErr?.error || errorText;
-      return res.status(400).send(renderPopupHtml(null, `Google identity token verification failed: ${errMsg}`));
-    }
-    
-    const tokenData = await tokenRes.json();
-    const { access_token, expires_in } = tokenData;
-    
-    // Request user profile info
-    const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-      headers: { "Authorization": `Bearer ${access_token}` }
-    });
-    
-    if (!userInfoRes.ok) {
-      const errorText = await userInfoRes.text();
-      return res.status(400).send(renderPopupHtml(null, `Google profile API fetch failed: ${errorText}`));
-    }
-    
-    const userInfo = await userInfoRes.json();
-    
-    // Create rich user session details
-    const sessionExpiresInMs = (expires_in || 3600) * 1000;
-    const userSession = {
-      name: userInfo.name || "Verified Google Creator",
-      email: userInfo.email,
-      picture: userInfo.picture || "",
-      googleId: userInfo.sub,
-      expiresAt: new Date(Date.now() + sessionExpiresInMs).toISOString(),
-      accessToken: access_token
-    };
-    
-    // Store credentials inside secure HttpOnly cookies; allow localhost HTTP during development.
-    res.setHeader(
-      "Set-Cookie",
-      buildAuthCookieHeader(userSession, expires_in || 3600, req, appUrl)
-    );
-    
-    return res.status(200).send(renderPopupHtml(userSession, null));
-  } catch (err: any) {
-    return res.status(500).send(renderPopupHtml(null, `Internal server state verification error: ${err.message}`));
-  }
+  res.status(400).send("OAuth callback is now handled by Supabase. No custom callback needed.");
 });
 
 // API: Client-Side direct registration with pre-fetched auth code info
+// Deprecated: OAuth code exchange is now handled by Supabase
 app.post("/api/auth/google-login-code", async (req, res) => {
-  const { code } = req.body;
-  
-  if (!code) {
-    return res.status(400).json({ error: "Authorization code is required" });
-  }
-  
-  try {
-    let appUrl = (process.env.APP_URL || "").trim().replace(/\/$/, "");
-    if (!appUrl || appUrl === "MY_APP_URL" || appUrl.includes("PLACEHOLDER")) {
-      const host = req.get("host") || "localhost:3000";
-      const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
-      appUrl = `${proto}://${host}`;
-    }
-    // Google Identity Services code client sends a code that must be exchanged using postmessage.
-    const redirectUri = "postmessage";
-    
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code: code,
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code"
-      })
-    });
-    
-    if (!tokenRes.ok) {
-      const errorText = await tokenRes.text();
-      let parsedErr: any;
-      try { parsedErr = JSON.parse(errorText); } catch (e) {}
-      const errMsg = parsedErr?.error_description || parsedErr?.error || errorText;
-      return res.status(400).json({ error: `Google identity token verification failed: ${errMsg}` });
-    }
-    
-    const tokenData = await tokenRes.json();
-    const { access_token, expires_in } = tokenData;
-    
-    const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-      headers: { "Authorization": `Bearer ${access_token}` }
-    });
-    
-    if (!userInfoRes.ok) {
-      const errorText = await userInfoRes.text();
-      return res.status(400).json({ error: `Google profile API fetch failed: ${errorText}` });
-    }
-    
-    const userInfo = await userInfoRes.json();
-    
-    const sessionExpiresInMs = (expires_in || 3600) * 1000;
-    const userSession = {
-      name: userInfo.name || "Verified Google Creator",
-      email: userInfo.email,
-      picture: userInfo.picture || "",
-      googleId: userInfo.sub,
-      expiresAt: new Date(Date.now() + sessionExpiresInMs).toISOString(),
-      accessToken: access_token
-    };
-    
-    res.setHeader(
-      "Set-Cookie",
-      buildAuthCookieHeader(userSession, expires_in || 3600, req, appUrl)
-    );
-    
-    const state = getUserState();
-    res.json({
-      ...state,
-      user: userSession
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: `Server authentication error: ${err.message}` });
-  }
+  res.status(400).json({ error: "OAuth is now handled by Supabase. Use supabase.auth.signInWithOAuth() instead." });
 });
 
-// API: Logout Session
+// Logout is now handled by Supabase client-side
 app.post("/api/auth/logout", (req, res) => {
-  const appUrl = getAppUrl(req);
-  res.setHeader(
-    "Set-Cookie",
-    buildClearAuthCookieHeader(req, appUrl)
-  );
-  res.json({ success: true });
+  res.json({ success: true, message: "Use supabase.auth.signOut() on the client." });
 });
 
 // API: API Key Verification
