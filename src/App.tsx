@@ -56,57 +56,8 @@ import DeploymentConsole from "./components/DeploymentConsole";
 import ProjectHistory from "./components/ProjectHistory";
 import PricingPage from "./components/PricingPage";
 import SriAICore from "./components/SriAICore";
-import SupabaseAuth from "./components/SupabaseAuth";
 import { ProjectDetails, ProjectSummary } from "./types";
-import { supabase } from "./lib/supabase";
-
-
-// Custom fetch helper that transparently adds Authorization and x-google-auth-session headers
-// for sandbox/iframe environment stability without trying to overwrite the read-only window.fetch.
-const customFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  let sessionStr: string | null = null;
-  try {
-    sessionStr = localStorage.getItem("google_auth_session");
-  } catch (e) {}
-
-  const isApi = typeof input === "string" && input.startsWith("/api");
-  const headers = new Headers(init?.headers || {});
-
-  if (sessionStr && isApi) {
-    if (!headers.has("Authorization")) {
-      headers.set("Authorization", `Bearer ${sessionStr}`);
-    }
-    if (!headers.has("x-google-auth-session")) {
-      headers.set("x-google-auth-session", encodeURIComponent(sessionStr));
-    }
-  }
-
-  return window.fetch(input, { ...init, headers });
-};
-
-// Use scoped module-level fetch for all requests in this file
-const fetch = customFetch;
-
-// Safely retrieve user session from localStorage
-const getStoredUser = () => {
-  try {
-    const saved = localStorage.getItem("google_auth_user");
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      const expiresAtDate = new Date(parsed.expiresAt);
-      if (expiresAtDate > new Date()) {
-        console.log("Restored user from localStorage on refresh/init:", parsed);
-        return parsed;
-      } else {
-        localStorage.removeItem("google_auth_user");
-        localStorage.removeItem("google_auth_session");
-      }
-    }
-  } catch (e) {
-    console.error("Error reading stored user from localStorage", e);
-  }
-  return null;
-};
+import { supabase, isSupabaseConfigured } from "./lib/supabase";
 
 export default function App() {
   const [projectsList, setProjectsList] = useState<ProjectSummary[]>([]);
@@ -133,8 +84,6 @@ export default function App() {
   // Billing and Referral states
   const [billingOpen, setBillingOpen] = useState(false);
   const [referralCopied, setReferralCopied] = useState(false);
-  const authPopupRef = useRef<Window | null>(null);
-  const authPopupIntervalRef = useRef<number | null>(null);
   const [userState, setUserState] = useState({
     credits: 85,
     appCreationsCount: 1,
@@ -145,7 +94,7 @@ export default function App() {
     offerRedeemed: false,
     offerSignupTime: null as null | string,
     offerPopupShown: false,
-    user: getStoredUser() as null | {
+    user: null as null | {
       name: string;
       email: string;
       picture: string;
@@ -164,7 +113,6 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisReport, setAnalysisReport] = useState<any | null>(null);
   const [selectedSize, setSelectedSize] = useState<"Small" | "Medium" | "Large">("Medium");
-  const [supabaseSession, setSupabaseSession] = useState<any>(null);
 
   // Sri AI Doubt Assistant chatbot states
   const [sriChat, setSriChat] = useState<Array<{
@@ -256,14 +204,27 @@ export default function App() {
 
   const handleSupabaseSessionChange = (session: any) => {
     if (!session) {
-      setSupabaseSession(null);
       setUserState(prev => ({ ...prev, user: null }));
       return;
     }
 
     const legacyUser = convertSupabaseSessionToLegacyUser(session);
-    setSupabaseSession(session);
     setUserState(prev => ({ ...prev, user: legacyUser }));
+
+    // Defensive: ensure any fullscreen/modal state is closed immediately after login
+    try {
+      setBillingOpen(false);
+      setIsSimulatorOpen(false);
+      setIsFeedbackOpen(false);
+      setShowOfferPopup(false);
+      // Restore pointer events / scrolling in case any side-effect disabled them
+      document.body.style.pointerEvents = "auto";
+      document.body.style.overflow = "auto";
+      // Notify header/popovers to close
+      document.dispatchEvent(new CustomEvent('app:closeProfile'));
+    } catch (e) {
+      console.warn('Error while cleaning up modal states after auth', e);
+    }
   };
 
   const handleExecuteConsoleSnippet = () => {
@@ -428,41 +389,32 @@ export default function App() {
     deploymentUrl?: string;
   } | null>(null);
 
-  // Manage first-time user discount timer and synchronization
+  // Manage first-time user discount state without auto-showing a blocking popup
   useEffect(() => {
-    let timer: any;
-    
-    const handleOfferState = async () => {
+    const syncOfferState = async () => {
       const email = userState.user?.email || "anon";
       const isAnon = email === "anon";
-      
-      let finalSignupTimeStr = isAnon 
-        ? localStorage.getItem("offer_signup_time_anon")
-        : (userState.offerSignupTime || localStorage.getItem(`offer_signup_time_${email}`));
-        
-      let finalPopupShown = isAnon
-        ? localStorage.getItem("offer_popup_shown_anon") === "true"
-        : (userState.offerPopupShown || localStorage.getItem(`offer_popup_shown_${email}`) === "true");
 
-      let currentRedeemed = isAnon
+      const storedSignupTime = isAnon
+        ? localStorage.getItem("offer_signup_time_anon")
+        : localStorage.getItem(`offer_signup_time_${email}`);
+
+      const storedPopupShown = isAnon
+        ? localStorage.getItem("offer_popup_shown_anon") === "true"
+        : localStorage.getItem(`offer_popup_shown_${email}`) === "true";
+
+      const currentRedeemed = isAnon
         ? localStorage.getItem("offer_redeemed_anon") === "true"
         : userState.offerRedeemed;
 
-      const now = Date.now();
-
-      // If no signup time exists, they are signing up/logging in for the FIRST time!
-      if (!finalSignupTimeStr && !currentRedeemed) {
-        const initialTimeStr = new Date(now).toISOString();
-        finalSignupTimeStr = initialTimeStr;
-        
+      if (!storedSignupTime && !currentRedeemed) {
+        const initialTimeStr = new Date().toISOString();
         if (isAnon) {
           localStorage.setItem("offer_signup_time_anon", initialTimeStr);
           localStorage.setItem("offer_popup_shown_anon", "true");
         } else {
           localStorage.setItem(`offer_signup_time_${email}`, initialTimeStr);
           localStorage.setItem(`offer_popup_shown_${email}`, "true");
-          
-          // Save state to server
           try {
             await fetch("/api/user-state/update-offer", {
               method: "POST",
@@ -470,18 +422,14 @@ export default function App() {
               body: JSON.stringify({
                 offerSignupTime: initialTimeStr,
                 offerPopupShown: true,
-                offerRedeemed: false
-              })
+                offerRedeemed: false,
+              }),
             });
-          } catch(e) {
+          } catch (e) {
             console.error("Failed to sync initial offer state to server", e);
           }
         }
-        
-        // Auto-show prompt/popup
-        setShowOfferPopup(true);
-      } else if (!finalPopupShown && !currentRedeemed) {
-        // If we have a signup time but haven't shown popup yet
+      } else if (!storedPopupShown && !currentRedeemed) {
         if (isAnon) {
           localStorage.setItem("offer_popup_shown_anon", "true");
         } else {
@@ -490,96 +438,98 @@ export default function App() {
             await fetch("/api/user-state/update-offer", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ offerPopupShown: true })
+              body: JSON.stringify({ offerPopupShown: true }),
             });
-          } catch(e){}
+          } catch (e) {
+            console.error("Failed to sync offer popup state to server", e);
+          }
         }
-        setShowOfferPopup(true);
       }
-
-      // Live countdown loop
-      const updateCountdown = () => {
-        if (currentRedeemed) {
-          setOfferSecondsLeft(null);
-          return;
-        }
-
-        const signupMs = finalSignupTimeStr ? new Date(finalSignupTimeStr).getTime() : now;
-        const elapsedMs = Date.now() - signupMs;
-        const totalValidityMs = 24 * 3600 * 1000;
-        const remainingMs = totalValidityMs - elapsedMs;
-
-        if (remainingMs <= 0) {
-          setOfferSecondsLeft(0);
-        } else {
-          setOfferSecondsLeft(Math.floor(remainingMs / 1000));
-        }
-      };
-
-      updateCountdown();
-      timer = setInterval(updateCountdown, 1000);
     };
 
-    handleOfferState();
-
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [userState.user?.email, userState.offerSignupTime, userState.offerPopupShown, userState.offerRedeemed]);
+    syncOfferState();
+  }, [userState.user?.email, userState.offerRedeemed]);
 
   // Load project index list and user credits on mount
   useEffect(() => {
     fetchProjects();
     fetchUserState();
     checkApiKeyConfig();
+  }, []);
 
-    const handleAuthMessage = async (event: MessageEvent) => {
-      console.log("OAuth message event received:", event.origin, event.data);
-      if (authPopupIntervalRef.current) {
-        window.clearInterval(authPopupIntervalRef.current);
-        authPopupIntervalRef.current = null;
-      }
-      if (authPopupRef.current && !authPopupRef.current.closed) {
-        authPopupRef.current.close();
-        authPopupRef.current = null;
-      }
-      if (event.data?.type === "OAUTH_AUTH_SUCCESS") {
-        console.log("OAuth success: OAUTH_AUTH_SUCCESS event received:", event.data);
-        if (event.data.user) {
-          const user = event.data.user;
-          console.log("Token received and User profile loaded:", user);
-          try {
-            localStorage.setItem("google_auth_session", JSON.stringify(user));
-            localStorage.setItem("google_auth_user", JSON.stringify(user));
-            console.log("Session saved to localStorage. Redirect logic bypassed.");
-          } catch (localStorageErr) {
-            console.error("Failed to save session to localStorage:", localStorageErr);
-          }
-          setUserState(prev => ({
-            ...prev,
-            user: user
-          }));
-          setOauthError(null);
-          setActiveGlobalTab("workspace");
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      console.warn("Skipping Supabase auth initialization because Supabase is not configured.");
+      return;
+    }
+
+    const initSupabaseSession = async () => {
+      try {
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
+
+        if (error) {
+          console.error("Failed to load Supabase session:", error);
+          return;
         }
-        await fetchUserState();
-        setOauthError(null);
-      } else if (event.data?.type === "OAUTH_AUTH_ERROR") {
-        const errorMsg = event.data.error || "Google identity login failed.";
-        console.error("OAuth failure: event details:", errorMsg);
-        setOauthError(errorMsg);
+
+        if (session) {
+          handleSupabaseSessionChange(session);
+        }
+      } catch (err) {
+        console.error("Supabase session initialization failed:", err);
       }
     };
 
-    window.addEventListener("message", handleAuthMessage);
+    initSupabaseSession();
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      handleSupabaseSessionChange(session);
+    });
+
     return () => {
-      window.removeEventListener("message", handleAuthMessage);
-      if (authPopupIntervalRef.current) {
-        window.clearInterval(authPopupIntervalRef.current);
-        authPopupIntervalRef.current = null;
-      }
+      subscription?.unsubscribe();
     };
   }, []);
+
+  // Temporary production debug: log auth + modal states and ensure pointer events/overflow restored
+  useEffect(() => {
+    const user = userState.user;
+    try {
+      console.log("AUTH USER", user);
+      console.log("billingOpen", billingOpen);
+      // Best-effort detection for header profile popover in DOM
+      const profileOpenDetected = !!document.querySelector('[data-profile-popover]');
+      console.log("profileOpen", profileOpenDetected);
+      console.log("isSimulatorOpen", isSimulatorOpen);
+      console.log("isFeedbackOpen", isFeedbackOpen);
+      console.log("activeGlobalTab", activeGlobalTab);
+
+      // Ensure pointer events and scrolling are enabled after auth transitions
+      document.body.style.pointerEvents = "auto";
+      document.body.style.overflow = "auto";
+
+      if (user) {
+        // Auto-close any app-level modal states after login
+        setBillingOpen(false);
+        setIsSimulatorOpen(false);
+        setIsFeedbackOpen(false);
+        setShowOfferPopup(false);
+
+        // Notify header to close its profile popover (header listens for this custom event)
+        try {
+          document.dispatchEvent(new CustomEvent('app:closeProfile'));
+        } catch (e) {
+          // ignore
+        }
+      }
+    } catch (e) {
+      console.warn('Auth debug effect failed', e);
+    }
+  }, [userState.user]);
 
   useEffect(() => {
     const refCode = getReferralFromUrl();
@@ -653,47 +603,13 @@ export default function App() {
       const res = await fetch("/api/user-state");
       const data = await res.json();
       if (data && !data.error) {
-        if (data.user) {
-          console.log("User profile loaded from server during fetchUserState:", data.user);
-          try {
-            localStorage.setItem("google_auth_session", JSON.stringify(data.user));
-            localStorage.setItem("google_auth_user", JSON.stringify(data.user));
-            console.log("Session saved/updated in localStorage from server state");
-          } catch (e) {}
-        } else {
-          // If server returns null user (e.g. cookies are blocked in sandboxed iframe),
-          // restore from active localStorage session if valid
-          const savedUserStr = localStorage.getItem("google_auth_user");
-          if (savedUserStr) {
-            try {
-              const savedUser = JSON.parse(savedUserStr);
-              if (new Date(savedUser.expiresAt) > new Date()) {
-                console.log("Using active localStorage session (Server session was empty/cookie blocked):", savedUser);
-                data.user = savedUser;
-              } else {
-                localStorage.removeItem("google_auth_user");
-                localStorage.removeItem("google_auth_session");
-                console.log("Expired local session cleared");
-              }
-            } catch (err) {}
-          }
-        }
-        setUserState(data);
+        setUserState(prev => ({
+          ...data,
+          user: prev.user || data.user || null,
+        }));
       }
     } catch (e) {
       console.error("Failed to load user state from server, attempting localStorage recovery:", e);
-      const savedUserStr = localStorage.getItem("google_auth_user");
-      if (savedUserStr) {
-        try {
-          const savedUser = JSON.parse(savedUserStr);
-          if (new Date(savedUser.expiresAt) > new Date()) {
-            setUserState(prev => ({
-              ...prev,
-              user: savedUser
-            }));
-          }
-        } catch (err) {}
-      }
     }
   };
 
@@ -734,7 +650,6 @@ export default function App() {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        console.log("Referral successfully applied:", data);
         localStorage.removeItem("pending_referral_code");
         setPendingReferralCode(null);
         fetchUserState();
@@ -749,12 +664,16 @@ export default function App() {
   const handleLoginStart = async () => {
     try {
       setOauthError(null);
-      console.log("Triggering Supabase Google OAuth login flow...");
+      setBillingOpen(false);
+      setIsSimulatorOpen(false);
+      setIsFeedbackOpen(false);
+      setShowOfferPopup(false);
+      setClaimOfferTriggered(false);
 
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: "https://sctrustme.vercel.app",
+          redirectTo: window.location.origin,
         },
       });
 
@@ -770,22 +689,17 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      console.log("Logging out active user...");
-      
-      // Use Supabase logout
       const { error } = await supabase.auth.signOut();
       
       if (error) {
         console.error("Supabase logout error:", error);
       }
       
-      // Clear local storage
-      localStorage.removeItem("google_auth_session");
-      localStorage.removeItem("google_auth_user");
-      console.log("Session saved data cleared from localStorage");
-      
       setOauthError(null);
-      setSupabaseSession(null);
+      setBillingOpen(false);
+      setIsSimulatorOpen(false);
+      setIsFeedbackOpen(false);
+      setShowOfferPopup(false);
       setUserState(prev => ({
         ...prev,
         user: null
@@ -1873,12 +1787,6 @@ export default function App() {
         offerActive={offerSecondsLeft !== null && offerSecondsLeft > 0 && !userState.offerRedeemed}
       />
 
-      <SupabaseAuth
-        currentUser={supabaseSession}
-        onSessionChange={handleSupabaseSessionChange}
-        onError={(message) => setOauthError(message)}
-      />
-
       {/* PRIMARY CONTEXT WINDOWS */}
       {isGenerating ? (
         // SMART COMPILED ANIMATION SCREEN WITH DIAGNOSTIC AUTO-FIX REPORTS
@@ -2123,7 +2031,7 @@ export default function App() {
 
       {/* OVERLAY MODAL: SMART REQUIREMENTS PLANNING BLUEPRINT REPORT */}
       {analysisReport && (
-        <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-[100] p-6 backdrop-blur-md overflow-y-auto select-text">
+        <div className="relative bg-black/85 flex items-center justify-center z-[100] p-6 backdrop-blur-md overflow-y-auto select-text">
           <div className="bg-[#0F0F12] border border-slate-800 max-w-3xl w-full rounded-2xl overflow-hidden shadow-2xl my-8">
             <div className="bg-[#151519] px-6 py-5 border-b border-slate-800 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -2316,7 +2224,7 @@ export default function App() {
 
       {/* DRAWER MODAL: BILLING & REFERRALS PANEL */}
       {billingOpen && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[100] p-6 backdrop-blur-md select-none">
+        <div className="relative bg-black/80 flex items-center justify-center z-[100] p-6 backdrop-blur-md select-none">
           <div className="bg-[#0F0F12] border border-slate-805 max-w-2xl w-full rounded-2xl overflow-hidden shadow-2xl relative">
             <div className="bg-[#151519] px-6 py-4 border-b border-slate-800 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -2519,8 +2427,8 @@ export default function App() {
       )}
 
       {/* FIRST-TIME USER SPECIAL DISCOUNT WELCOME POPUP */}
-      {showOfferPopup && offerSecondsLeft !== null && offerSecondsLeft > 0 && !userState.offerRedeemed && (
-        <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-[200] p-4 backdrop-blur-xl animate-fade-in font-sans">
+      {false && showOfferPopup && offerSecondsLeft !== null && offerSecondsLeft > 0 && !userState.offerRedeemed && (
+        <div className="relative bg-black/85 flex items-center justify-center z-[200] p-4 backdrop-blur-xl animate-fade-in font-sans">
           <div className="bg-[#09090B] border-2 border-indigo-500/40 max-w-lg w-full rounded-2xl overflow-hidden shadow-2xl relative p-6 md:p-8 select-none text-center transform scale-100 hover:scale-[1.01] transition-transform duration-300">
             {/* Ambient Background Glow Particles */}
             <div className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-48 bg-indigo-500/10 blur-3xl pointer-events-none rounded-full" />
@@ -2639,7 +2547,7 @@ export default function App() {
 
       {/* HIGH-FIDELITY IN-APP INTERACTIVE STANDALONE APP SIMULATOR OVERLAY */}
       {isSimulatorOpen && currentProject && (
-        <div className="fixed inset-0 bg-black/95 flex flex-col z-[150] backdrop-blur-xl select-none p-4 md:p-6 overflow-y-auto">
+        <div className="relative bg-black/95 flex flex-col z-[150] backdrop-blur-xl select-none p-4 md:p-6 overflow-y-auto">
           {/* Header */}
           <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4 shrink-0">
             <div className="flex items-center gap-3">
@@ -2997,7 +2905,7 @@ export default function App() {
       {/* Feedback Modal */}
       <AnimatePresence>
         {isFeedbackOpen && (
-          <div className="fixed inset-0 bg-black/70 z-60 flex items-center justify-center p-6">
+          <div className="relative bg-black/70 z-60 flex items-center justify-center p-6">
             <motion.div initial={{opacity:0,scale:0.98}} animate={{opacity:1,scale:1}} exit={{opacity:0,scale:0.98}} className="w-full max-w-2xl">
               <FeedbackPanel onClose={() => setIsFeedbackOpen(false)} />
             </motion.div>
