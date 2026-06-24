@@ -768,23 +768,6 @@ app.post("/api/auth/reset-config", (req, res) => {
   }
 });
 
-// API: Google OAuth Callback Handler redirect
-// OAuth callback is now handled by Supabase - this endpoint is deprecated
-app.get(["/auth/callback", "/auth/callback/"], async (req, res) => {
-  res.status(400).send("OAuth callback is now handled by Supabase. No custom callback needed.");
-});
-
-// API: Client-Side direct registration with pre-fetched auth code info
-// Deprecated: OAuth code exchange is now handled by Supabase
-app.post("/api/auth/google-login-code", async (req, res) => {
-  res.status(400).json({ error: "OAuth is now handled by Supabase. Use supabase.auth.signInWithOAuth() instead." });
-});
-
-// Logout is now handled by Supabase client-side
-app.post("/api/auth/logout", (req, res) => {
-  res.json({ success: true, message: "Use supabase.auth.signOut() on the client." });
-});
-
 // API: API Key Verification
 app.get("/api/api-key-status", (req, res) => {
   res.json({

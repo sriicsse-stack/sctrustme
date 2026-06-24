@@ -14,7 +14,7 @@ export async function upsertUserProfileFromSession(session: any) {
 
   const { data, error } = await supabase
     .from("profiles")
-    .upsert(userProfile, { returning: "minimal" });
+    .upsert(userProfile);
 
   if (error) {
     console.error("Error upserting profile:", error);

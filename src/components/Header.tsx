@@ -79,6 +79,13 @@ export default function Header({
   const [profileOpen, setProfileOpen] = React.useState(false);
   const [timeLeft, setTimeLeft] = React.useState<string>("");
 
+  // Listen for global app requests to close the profile popover (debug auto-close)
+  React.useEffect(() => {
+    const handler = () => setProfileOpen(false);
+    document.addEventListener('app:closeProfile', handler as EventListener);
+    return () => document.removeEventListener('app:closeProfile', handler as EventListener);
+  }, []);
+
   // Dynamically recalculate remaining token duration to fulfill 'Handle token expiration'
   React.useEffect(() => {
     if (!user) return;
@@ -170,7 +177,9 @@ export default function Header({
         </button>
 
         <button
-          onClick={() => setActiveGlobalTab("sri-ai")}
+          onClick={() => {
+            setActiveGlobalTab("sri-ai");
+          }}
           className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-2 text-[11.5px] sm:text-xs font-bold rounded-lg cursor-pointer whitespace-nowrap relative transition-colors ${
             activeGlobalTab === "sri-ai" ? "text-white" : "text-slate-400 hover:text-white"
           }`}
@@ -194,7 +203,9 @@ export default function Header({
         </button>
 
         <button
-          onClick={() => setActiveGlobalTab("referral")}
+          onClick={() => {
+            setActiveGlobalTab("referral");
+          }}
           className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-2 text-[11.5px] sm:text-xs font-bold rounded-lg cursor-pointer whitespace-nowrap relative transition-colors ${
             activeGlobalTab === "referral" ? "text-white" : "text-slate-400 hover:text-white"
           }`}
@@ -214,7 +225,9 @@ export default function Header({
         </button>
 
         <button
-          onClick={() => setActiveGlobalTab("pricing")}
+          onClick={() => {
+            setActiveGlobalTab("pricing");
+          }}
           className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-2 text-[11.5px] sm:text-xs font-bold rounded-lg cursor-pointer whitespace-nowrap relative transition-colors ${
             activeGlobalTab === "pricing" ? "text-white" : "text-slate-400 hover:text-white"
           }`}
@@ -354,8 +367,8 @@ export default function Header({
               {/* Profile details popover */}
               {profileOpen && (
                 <>
-                  <div className="fixed inset-0 z-40" onClick={() => setProfileOpen(false)} />
-                  <div className="absolute right-0 mt-2.5 w-72 bg-[#12131A] border border-slate-800 rounded-2xl p-4 shadow-xl shadow-black/80 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                      {/* Backdrop removed to prevent click interception over header nav buttons */}
+                      <div data-profile-popover className="absolute right-0 mt-2.5 w-72 bg-[#12131A] border border-slate-800 rounded-2xl p-4 shadow-xl shadow-black/80 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
                     <div className="flex items-center gap-3 border-b border-slate-800/80 pb-3 mb-3">
                       <img 
                         src={user.picture || "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y"} 
