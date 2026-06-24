@@ -368,7 +368,7 @@ export default function PromptPanel({
                 {isDropdownOpen && (
                   <>
                     <div 
-                      className="fixed inset-0 z-10" 
+                      className="absolute inset-0 z-10 bg-transparent" 
                       onClick={() => setIsDropdownOpen(false)}
                     />
                     
