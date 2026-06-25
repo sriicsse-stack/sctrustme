@@ -57,6 +57,7 @@ import ProjectHistory from "./components/ProjectHistory";
 import PricingPage from "./components/PricingPage";
 import SriAICore from "./components/SriAICore";
 import StudentVerification from "./components/StudentVerification";
+import StudentOfferPopup from "./components/StudentOfferPopup";
 import { ProjectDetails, ProjectSummary } from "./types";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
 
@@ -108,6 +109,10 @@ export default function App() {
   const [showOfferPopup, setShowOfferPopup] = useState(false);
   const [claimOfferTriggered, setClaimOfferTriggered] = useState(false);
   const [offerSecondsLeft, setOfferSecondsLeft] = useState<number | null>(null);
+  
+  // Student offer popup states
+  const [showStudentOfferPopup, setShowStudentOfferPopup] = useState(false);
+  const [studentOfferShownTime, setStudentOfferShownTime] = useState<number | null>(null);
 
   // Smart Pre-Generation Requirement Report Planning states
   const [promptValue, setPromptValue] = useState("");
@@ -663,6 +668,22 @@ export default function App() {
     }
     return () => clearInterval(timer);
   }, [voiceActive, isVoiceListening, sriIsSpeaking, isVoiceCallActive, voiceCallState, isMicMuted]);
+
+  // Show student offer popup 3 seconds after entering pricing tab (for first-time visitors)
+  useEffect(() => {
+    if (activeGlobalTab === "pricing" && !showStudentOfferPopup && studentOfferShownTime === null) {
+      const timer = setTimeout(() => {
+        // Only show if user hasn't already verified or rejected an offer
+        const hasSeenOffer = localStorage.getItem("studentOfferShown");
+        if (!hasSeenOffer) {
+          setShowStudentOfferPopup(true);
+          setStudentOfferShownTime(Date.now());
+          localStorage.setItem("studentOfferShown", "true");
+        }
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [activeGlobalTab, showStudentOfferPopup, studentOfferShownTime]);
 
   const fetchProjects = async () => {
     try {
@@ -1985,6 +2006,7 @@ export default function App() {
       ) : activeGlobalTab === "pricing" ? (
         <PricingPage
           currentPlan={userState.plan}
+          currentUser={userState.user}
           onSelectPlan={handleChangePlan}
           offerActive={offerSecondsLeft !== null && offerSecondsLeft > 0 && !userState.offerRedeemed}
           offerTimeLeftStr={(() => {
@@ -3003,6 +3025,18 @@ export default function App() {
           <span className="text-sm font-bold">Feedback</span>
         </button>
       </div>
+
+      {/* Student Offer Popup */}
+      <StudentOfferPopup
+        isOpen={showStudentOfferPopup}
+        onClose={() => setShowStudentOfferPopup(false)}
+        onVerifyNow={() => {
+          setActiveGlobalTab("pricing");
+          setShowStudentOfferPopup(false);
+          // The pricing page will handle opening the verification modal
+        }}
+        timeLeft={offerSecondsLeft || 86400}
+      />
 
       {/* Feedback Modal */}
       <AnimatePresence>

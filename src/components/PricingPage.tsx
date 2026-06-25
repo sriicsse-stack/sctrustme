@@ -28,9 +28,11 @@ import {
   Users,
   Rocket
 } from "lucide-react";
+import StudentVerificationModal from "./StudentVerificationModal";
 
 interface PricingPageProps {
   currentPlan: string;
+  currentUser?: { name: string; email: string; googleId: string } | null;
   onSelectPlan: (plan: string, info: { credits: number; isUnlimited: boolean; isOfferRedeemed?: boolean }) => void;
   offerActive?: boolean;
   offerTimeLeftStr?: string;
@@ -40,6 +42,7 @@ interface PricingPageProps {
 
 export default function PricingPage({ 
   currentPlan, 
+  currentUser,
   onSelectPlan,
   offerActive = false,
   offerTimeLeftStr = "24:00:00",
@@ -49,6 +52,7 @@ export default function PricingPage({
   // Countdown Timer state: 23:59:59
   const [secondsLeft, setSecondsLeft] = useState(23 * 3600 + 59 * 60 + 59);
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
+  const [showVerificationModal, setShowVerificationModal] = useState(false);
   
   // Simulated checkout state
   const [selectedUpgradePlan, setSelectedUpgradePlan] = useState<{
@@ -144,15 +148,12 @@ export default function PricingPage({
           return;
         }
 
-        // Not verified — redirect user to verification page
-        alert('Student offer is available only for verified students. You will be redirected to the verification page to submit documents.');
-        try {
-          // Minimal navigation without changing app routing logic
-          window.location.href = `${window.location.origin}/?tab=verification`;
-        } catch (e) {
-          // fallback: open student verification page in new tab
-          window.open('/?tab=verification', '_self');
+        // Not verified — open verification modal
+        if (!currentUser) {
+          alert('Please sign in to verify your student status.');
+          return;
         }
+        setShowVerificationModal(true);
         return;
       }
 
@@ -850,6 +851,19 @@ export default function PricingPage({
       </div>
 
       {/* Razorpay integration: clicking a plan opens official Razorpay Checkout (no simulated UI) */}
+      
+      {/* Student Verification Modal */}
+      <StudentVerificationModal
+        isOpen={showVerificationModal}
+        onClose={() => setShowVerificationModal(false)}
+        currentUser={currentUser || null}
+        onStatusChanged={() => {
+          // Reload verification status after successful submission
+          const res = fetch("/api/verification/me").then(r => r.json()).then(d => {
+            setUserVerificationStatus(d.verificationStatus || null);
+          });
+        }}
+      />
     </div>
   );
 }
