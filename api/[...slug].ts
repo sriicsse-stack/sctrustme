@@ -272,6 +272,10 @@ async function geminiGenerateContent(payload: any, attempt = 1): Promise<any> {
   }
   const model = payload.model || GEMINI_PRIMARY_MODEL;
   const effectiveModel = attempt === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : model;
+  
+  // Log every Gemini request for debugging
+  console.log(`[Gemini Request] Model: ${effectiveModel}, Attempt: ${attempt}/${GEMINI_RETRY_COUNT}, API Key Status: ${rawGeminiKey ? "LOADED" : "MISSING"}`);
+  
   try {
     return await aiClient.models.generateContent({ ...payload, model: effectiveModel });
   } catch (err: any) {
@@ -799,6 +803,19 @@ function handleApiKeyStatus(res: any) {
   return sendJson(res, { active: hasKey });
 }
 
+function handleGeminiDiagnostics(res: any) {
+  const hasKey = !!aiClient && !!rawGeminiKey && rawGeminiKey !== "MY_GEMINI_API_KEY";
+  return sendJson(res, {
+    geminiApiLoaded: hasKey,
+    currentGeminiModel: GEMINI_PRIMARY_MODEL,
+    fallbackGeminiModel: GEMINI_FALLBACK_MODEL,
+    apiKeyStatus: hasKey ? "ACTIVE" : "INVALID",
+    environment: NODE_ENV,
+    apiKeyPrefix: rawGeminiKey ? rawGeminiKey.substring(0, 10) + "..." : "MISSING",
+    timestamp: new Date().toISOString(),
+  });
+}
+
 function handleSimulateReferral(res: any, body: any) {
   const { actionType } = body || {};
   const state = getUserState();
@@ -871,6 +888,9 @@ function handleResetUserState(res: any) {
 }
 
 async function handleAnalyzePrompt(res: any, body: any, prompt: string) {
+  console.log(`[API Handler] analyze-prompt endpoint called with prompt: "${prompt.substring(0, 50)}..."`);
+  console.log(`[API Handler] Gemini Model: ${GEMINI_PRIMARY_MODEL}, API Key Loaded: ${rawGeminiKey ? "YES" : "NO"}`);
+  
   if (!aiClient) {
     return sendJson(res, {
       prompt,
@@ -1055,6 +1075,9 @@ async function handleSriAi(req: any, res: any, body: any) {
 }
 
 async function handleGenerate(res: any, body: any) {
+  console.log(`[API Handler] generate endpoint called`);
+  console.log(`[API Handler] Gemini Model: ${GEMINI_PRIMARY_MODEL}, API Key Loaded: ${rawGeminiKey ? "YES" : "NO"}`);
+  
   const prompt = body?.prompt;
   const size = body?.size;
   if (!prompt || typeof prompt !== "string") {
@@ -1362,6 +1385,7 @@ export default async function handler(req: any, res: any) {
     if (endpoint === "auth/save-config" && method === "POST") return handleAuthSaveConfig(res, body);
     if (endpoint === "auth/reset-config" && method === "POST") return handleAuthResetConfig(res);
     if (endpoint === "api-key-status" && method === "GET") return handleApiKeyStatus(res);
+    if (endpoint === "gemini-diagnostics" && method === "GET") return handleGeminiDiagnostics(res);
     if (endpoint === "user-state/simulate-referral" && method === "POST") return handleSimulateReferral(res, body);
     if (endpoint === "user-state/change-plan" && method === "POST") return handleChangePlan(res, body);
     if (endpoint === "user-state/update-offer" && method === "POST") return handleUpdateOffer(res, body);
