@@ -78,7 +78,7 @@ export default function App() {
   const [isDeploying, setIsDeploying] = useState(false);
   const [isApplyingEdits, setIsApplyingEdits] = useState(false);
   const [deployLogs, setDeployLogs] = useState<string[]>([]);
-  const [apiKeyStatus, setApiKeyStatus] = useState(true);
+  const [apiKeyStatus, setApiKeyStatus] = useState<boolean | null>(null);
   const [oauthError, setOauthError] = useState<string | null>(null);
 
   // Billing and Referral states
@@ -712,10 +712,19 @@ export default function App() {
   const checkApiKeyConfig = async () => {
     try {
       const res = await fetch("/api/api-key-status");
+      if (!res.ok) {
+        console.warn("Failed to load Gemini API key status", res.status, res.statusText);
+        return;
+      }
+
       const data = await res.json();
-      setApiKeyStatus(!!data.active);
+      if (typeof data.active === "boolean") {
+        setApiKeyStatus(data.active);
+      } else {
+        console.warn("Unexpected response from /api/api-key-status", data);
+      }
     } catch (e) {
-      setApiKeyStatus(false);
+      console.warn("Error checking Gemini API key status", e);
     }
   };
 

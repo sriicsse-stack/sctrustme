@@ -31,7 +31,7 @@ interface HeaderProps {
   onDeploy: (platform: string) => void;
   onDownload: () => void;
   onBackToHub: () => void;
-  hasApiKey: boolean;
+  hasApiKey: boolean | null;
   
   // Custom interactive channels & billing stats
   activeGlobalTab: "workspace" | "sri-ai" | "pricing" | "referral";
@@ -432,10 +432,10 @@ export default function Header({
 
           {/* Gemini API state */}
           <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-[#16161A] border border-slate-800 rounded-xl text-xs">
-            <div className={`h-1.5 w-1.5 rounded-full ${hasApiKey ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`} />
+            <div className={`h-1.5 w-1.5 rounded-full ${hasApiKey === null ? "bg-slate-500" : hasApiKey ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`} />
             <span className="text-slate-400 font-mono text-[9px]">GEMINI AI</span>
-            <span className={`font-bold font-mono text-[10px] ${hasApiKey ? "text-emerald-400" : "text-rose-400"}`}>
-              {hasApiKey ? "ACTIVE" : "MISSING"}
+            <span className={`font-bold font-mono text-[10px] ${hasApiKey === null ? "text-slate-400" : hasApiKey ? "text-emerald-400" : "text-rose-400"}`}>
+              {hasApiKey === null ? "CHECKING" : hasApiKey ? "ACTIVE" : "MISSING"}
             </span>
           </div>
 
