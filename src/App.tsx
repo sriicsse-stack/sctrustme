@@ -3031,9 +3031,16 @@ export default function App() {
         isOpen={showStudentOfferPopup}
         onClose={() => setShowStudentOfferPopup(false)}
         onVerifyNow={() => {
-          setActiveGlobalTab("pricing");
-          setShowStudentOfferPopup(false);
-          // The pricing page will handle opening the verification modal
+          try {
+            setShowStudentOfferPopup(false);
+            setActiveGlobalTab("verification");
+            if (typeof window !== "undefined" && window.scrollTo) {
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }
+            console.log("[App] Student Offer popup: navigating to verification page.");
+          } catch (error) {
+            console.error("[App] Failed to navigate from Student Offer popup:", error);
+          }
         }}
         timeLeft={offerSecondsLeft || 86400}
       />
