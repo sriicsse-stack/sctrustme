@@ -245,6 +245,28 @@ export default function Header({
             <span className="inline sm:hidden">🎁 Refer</span>
           </span>
         </button>
+
+        <button
+          onClick={() => {
+            setActiveGlobalTab("pricing");
+          }}
+          className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-2 text-[11.5px] sm:text-xs font-bold rounded-lg cursor-pointer whitespace-nowrap relative transition-colors ${
+            activeGlobalTab === "pricing" ? "text-white" : "text-slate-400 hover:text-white"
+          }`}
+        >
+          {activeGlobalTab === "pricing" && (
+            <motion.span
+              layoutId="activeGlobalTabBackground"
+              className="absolute inset-0 bg-blue-600 rounded-lg shadow-md shadow-blue-900/30"
+              transition={{ type: "spring", stiffness: 350, damping: 28 }}
+            />
+          )}
+          <span className="relative z-10 flex items-center gap-1.5 sm:gap-2">
+            <CreditCard className="h-3.5 w-3.5 font-bold shrink-0 text-amber-300" />
+            <span className="hidden sm:inline">Pricing Plans</span>
+            <span className="inline sm:hidden">Pricing</span>
+          </span>
+        </button>
       </div>
 
       {/* Workspace Context tab selectors inside project */}
