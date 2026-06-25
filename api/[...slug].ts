@@ -96,9 +96,25 @@ function saveUserState(state: any) {
 
 const rawGeminiKey = (process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || "").trim();
 let aiClient: GoogleGenAI | null = null;
-const GEMINI_PRIMARY_MODEL = process.env.GEMINI_MODEL || "gemini-pro-latest";
-const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-flash-latest";
+const GEMINI_PRIMARY_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-2.0-flash";
 const GEMINI_RETRY_COUNT = 4;
+const NODE_ENV = process.env.NODE_ENV || "development";
+
+// Log startup diagnostics
+if (typeof window === "undefined") {
+  // Only log in server environment, not browser
+  if (rawGeminiKey && rawGeminiKey !== "MY_GEMINI_API_KEY") {
+    console.log("✅ Gemini API Loaded: YES");
+    console.log(`📊 Current Gemini Model: ${GEMINI_PRIMARY_MODEL}`);
+    console.log(`🔄 Fallback Model: ${GEMINI_FALLBACK_MODEL}`);
+    console.log(`🔐 Current API Key Status: ACTIVE`);
+    console.log(`🌍 Current Environment: ${NODE_ENV === "production" ? "Production" : "Development"}`);
+  } else {
+    console.log("❌ Gemini API Loaded: NO");
+    console.log(`🔐 Current API Key Status: INVALID`);
+  }
+}
 
 if (rawGeminiKey && rawGeminiKey !== "MY_GEMINI_API_KEY") {
   aiClient = new GoogleGenAI({
@@ -252,7 +268,7 @@ async function parseBody(req: any): Promise<any> {
 
 async function geminiGenerateContent(payload: any, attempt = 1): Promise<any> {
   if (!aiClient) {
-    throw new Error("Gemini API client is not available.");
+    throw new Error("Gemini API client is not available. Please set GEMINI_API_KEY environment variable.");
   }
   const model = payload.model || GEMINI_PRIMARY_MODEL;
   const effectiveModel = attempt === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : model;
@@ -261,15 +277,26 @@ async function geminiGenerateContent(payload: any, attempt = 1): Promise<any> {
   } catch (err: any) {
     const message = String(err?.message || err || "");
     const code = err?.code || err?.status || err?.statusCode;
+    const isQuotaExceeded = /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(message) || code === 429;
     const isRetryable = /503|UNAVAILABLE|high demand|service unavailable/i.test(message) || code === 503;
     const isModelNotFound = /not found|NOT_FOUND|is not found|not supported|unsupported/i.test(message);
 
+    // Handle quota exceeded
+    if (isQuotaExceeded && attempt < GEMINI_RETRY_COUNT) {
+      const nextModel = attempt + 1 === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : effectiveModel;
+      console.warn(`⚠️ Quota exceeded on model ${effectiveModel} (attempt ${attempt}/${GEMINI_RETRY_COUNT}). Retrying with ${nextModel}...`);
+      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+      return geminiGenerateContent({ ...payload, model: nextModel }, attempt + 1);
+    }
+
     if (attempt < GEMINI_RETRY_COUNT) {
       if (isModelNotFound && effectiveModel !== GEMINI_FALLBACK_MODEL) {
+        console.warn(`Gemini model ${effectiveModel} is unavailable. Switching to fallback ${GEMINI_FALLBACK_MODEL}.`);
         return geminiGenerateContent({ ...payload, model: GEMINI_FALLBACK_MODEL }, attempt + 1);
       }
       if (isRetryable) {
         const nextModel = attempt + 1 === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : effectiveModel;
+        console.warn(`Gemini request failed (attempt ${attempt}). Retrying...`);
         await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
         return geminiGenerateContent({ ...payload, model: nextModel }, attempt + 1);
       }
@@ -1209,9 +1236,8 @@ function handleProjectById(res: any, id: string) {
   return sendJson(res, project);
 }
 
-function handleProjectDeploy(req: any, res: any, id: string) {
-  const body = req.body || {};
-  const targetPlatform = body.targetPlatform || "Vercel";
+function handleProjectDeploy(req: any, res: any, id: string, body: any) {
+  const targetPlatform = body?.targetPlatform || "Vercel";
   const projects = getProjects();
   const projectIndex = projects.findIndex((p: any) => p.id === id);
   if (projectIndex === -1) return sendJson(res, { error: "Project not found" }, 404);
@@ -1314,6 +1340,7 @@ export default async function handler(req: any, res: any) {
   const segments = pathName.split("/").filter(Boolean);
   const query = Object.fromEntries(url.searchParams.entries());
   const body = await parseBody(req);
+  req.body = body;
 
   try {
     if (segments.length === 0) {
@@ -1345,7 +1372,7 @@ export default async function handler(req: any, res: any) {
     if (endpoint === "refine" && method === "POST") return handleRefine(res, body);
     if (endpoint === "projects" && method === "GET") return handleProjectsList(res);
     if (segments[0] === "projects" && segments.length === 2 && method === "GET") return handleProjectById(res, segments[1]);
-    if (segments[0] === "projects" && segments.length === 3 && segments[2] === "deploy" && method === "POST") return handleProjectDeploy(req, res, segments[1]);
+    if (segments[0] === "projects" && segments.length === 3 && segments[2] === "deploy" && method === "POST") return handleProjectDeploy(req, res, segments[1], body);
     if (segments[0] === "projects" && segments.length === 3 && segments[2] === "download" && method === "GET") return handleProjectDownload(res, segments[1]);
 
     return sendJson(res, { error: "Endpoint not found" }, 404);

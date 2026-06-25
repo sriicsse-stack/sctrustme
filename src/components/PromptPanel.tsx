@@ -228,11 +228,13 @@ export default function PromptPanel({
     setActiveSuggestionIndex(0);
   }, [promptInput]);
 
-  const handleSubmitGenerate = (e: React.FormEvent) => {
+  const handleSubmitGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!promptInput.trim() || isGenerating) return;
-    saveToHistory(promptInput);
-    onGenerate(promptInput);
+    const cleanedPrompt = promptInput.trim();
+    console.debug("[PromptPanel] submit Generate & Deploy", { cleanedPrompt, isGenerating });
+    if (!cleanedPrompt || isGenerating) return;
+    saveToHistory(cleanedPrompt);
+    await onGenerate(cleanedPrompt);
   };
 
   const handleSubmitRefine = (e: React.FormEvent) => {
@@ -466,8 +468,9 @@ export default function PromptPanel({
               )}
 
               <button
-                type="submit"
+                type="button"
                 id="submit-generate-btn"
+                onClick={handleSubmitGenerate}
                 disabled={isGenerating || !promptInput.trim()}
                 className="absolute bottom-3 right-3 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded text-xs font-semibold tracking-tight transition-colors cursor-pointer flex items-center justify-center shadow-lg shadow-blue-950/40"
               >

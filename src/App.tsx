@@ -603,10 +603,10 @@ export default function App() {
       const res = await fetch("/api/user-state");
       const data = await res.json();
       if (data && !data.error) {
-        setUserState(prev => ({
+        setUserState({
           ...data,
-          user: prev.user || data.user || null,
-        }));
+          user: data.user || null,
+        });
       }
     } catch (e) {
       console.error("Failed to load user state from server, attempting localStorage recovery:", e);
@@ -751,8 +751,10 @@ export default function App() {
 
   // Phase 1: Smart prompt requirements analysis
   const handleStartAnalysis = async (promptText: string) => {
-    if (!promptText.trim()) return;
-    setPromptValue(promptText);
+    const cleanedPrompt = promptText.trim();
+    if (!cleanedPrompt) return;
+    console.debug("[App] handleStartAnalysis", { promptText: cleanedPrompt });
+    setPromptValue(cleanedPrompt);
     setIsAnalyzing(true);
     setAnalysisReport(null);
 
@@ -760,7 +762,7 @@ export default function App() {
       const res = await fetch("/api/analyze-prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: promptText })
+        body: JSON.stringify({ prompt: cleanedPrompt })
       });
       const data = await res.json();
       
@@ -771,6 +773,7 @@ export default function App() {
       }
       
       setAnalysisReport(data);
+      await handleConfirmBuild(data);
     } catch (e) {
       alert("Failed to analyze prompt. Attempting direct fallback.");
     } finally {
@@ -779,9 +782,9 @@ export default function App() {
   };
 
   // Phase 2: Accept requirements report & build actual website template
-  const handleConfirmBuild = async () => {
-    if (!analysisReport) return;
-    const promptToGen = analysisReport.prompt;
+  const handleConfirmBuild = async (analysisData: any) => {
+    if (!analysisData) return;
+    const promptToGen = analysisData.prompt;
     
     // Clear requirement screen, begin build loader
     setAnalysisReport(null);
@@ -814,6 +817,7 @@ export default function App() {
     }, 1000);
 
     try {
+      console.debug("[App] handleConfirmBuild", { promptToGen });
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2220,7 +2224,7 @@ export default function App() {
               </button>
 
               <button
-                onClick={handleConfirmBuild}
+                onClick={() => handleConfirmBuild(analysisReport)}
                 className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-blue-950 flex items-center gap-1.5 cursor-pointer"
               >
                 <Rocket className="h-4 w-4 text-blue-100 animate-pulse" />
