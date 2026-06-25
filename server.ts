@@ -82,7 +82,11 @@ function saveUserState(state: any) {
 }
 
 // Initialize Gemini SDK with User-Agent telemetry
-const apiKey = process.env.GEMINI_API_KEY?.trim() || "";
+const rawGeminiKey = process.env.GEMINI_API_KEY?.trim() || process.env.VITE_GEMINI_API_KEY?.trim() || "";
+if (!process.env.GEMINI_API_KEY && process.env.VITE_GEMINI_API_KEY) {
+  process.env.GEMINI_API_KEY = process.env.VITE_GEMINI_API_KEY;
+}
+const apiKey = rawGeminiKey || "";
 let aiClient: GoogleGenAI | null = null;
 const GEMINI_PRIMARY_MODEL = process.env.GEMINI_MODEL || "gemini-pro-latest";
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-flash-latest";
@@ -770,9 +774,8 @@ app.post("/api/auth/reset-config", (req, res) => {
 
 // API: API Key Verification
 app.get("/api/api-key-status", (req, res) => {
-  res.json({
-    active: !!aiClient && !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MY_GEMINI_API_KEY"
-  });
+  const hasKey = !!aiClient && !!rawGeminiKey && rawGeminiKey !== "MY_GEMINI_API_KEY";
+  res.json({ active: hasKey });
 });
 
 // API: Simulate Referral Reward Trigger
@@ -1896,5 +1899,10 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export { app };
+export default app;
 
