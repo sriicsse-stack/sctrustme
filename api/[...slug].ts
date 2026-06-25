@@ -6,8 +6,19 @@ import crypto from "crypto";
 import JSZip from "jszip";
 import Razorpay from "razorpay";
 import { GoogleGenAI, Type } from "@google/genai";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
+
+// Supabase client initialization
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const supabaseClient = 
+  SUPABASE_URL && SUPABASE_SERVICE_KEY 
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+        auth: { persistSession: false },
+      })
+    : null;
 
 let cachedDataDir: string | null = null;
 function getDataDir(): string {
@@ -36,6 +47,7 @@ const PROJECTS_FILE = dataFile("projects.json");
 const USER_STATE_FILE = dataFile("user_state.json");
 const FEEDBACK_FILE = dataFile("feedbacks.json");
 const REFERRAL_FILE = dataFile("referrals.json");
+const VERIFICATION_FILE = dataFile("verification_requests.json");
 const GOOGLE_CONFIG_PATH = dataFile("google_auth_config.json");
 
 function readJsonFile<T>(filePath: string, defaultValue: T): T {
@@ -82,11 +94,15 @@ function getUserState() {
     offerRedeemed: false,
     offerSignupTime: null,
     offerPopupShown: false,
+    verificationStatus: "none",
+    verificationRequest: null,
   };
   const state = readJsonFile<any>(USER_STATE_FILE, defaultState);
   if (state.offerRedeemed === undefined) state.offerRedeemed = false;
   if (state.offerSignupTime === undefined) state.offerSignupTime = null;
   if (state.offerPopupShown === undefined) state.offerPopupShown = false;
+  if (state.verificationStatus === undefined) state.verificationStatus = "none";
+  if (state.verificationRequest === undefined) state.verificationRequest = null;
   return { ...defaultState, ...state };
 }
 
@@ -99,6 +115,7 @@ let aiClient: GoogleGenAI | null = null;
 const GEMINI_PRIMARY_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-2.0-flash";
 const GEMINI_RETRY_COUNT = 4;
+const GEMINI_REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_REQUEST_TIMEOUT_MS || 9000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 // Log startup diagnostics
@@ -120,6 +137,7 @@ if (rawGeminiKey && rawGeminiKey !== "MY_GEMINI_API_KEY") {
   aiClient = new GoogleGenAI({
     apiKey: rawGeminiKey,
     httpOptions: {
+      timeout: GEMINI_REQUEST_TIMEOUT_MS,
       headers: {
         "User-Agent": "aistudio-build",
       },
@@ -154,11 +172,37 @@ function getRequestIp(req: any): string {
 }
 
 function getCookieValue(req: any, key: string): string | null {
+  const customHeader = getHeader(req, "x-google-auth-session");
+  if (customHeader) {
+    return decodeURIComponent(customHeader);
+  }
+
+  const authHeader = getHeader(req, "authorization");
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    return authHeader.substring(7);
+  }
+
   const cookieHeader = getHeader(req, "cookie");
   if (!cookieHeader) return null;
   const cookies = cookieHeader.split(";").map((cookie: string) => cookie.trim().split("="));
   const match = cookies.find(([name]: string[]) => name === key);
   return match ? decodeURIComponent(match[1] || "") : null;
+}
+
+function getAuthenticatedRequestUser(req: any, body: any = {}) {
+  let currentUser: any = null;
+  const sessionCookie = getCookieValue(req, "google_auth_session");
+  if (sessionCookie) {
+    try {
+      currentUser = JSON.parse(decodeURIComponent(sessionCookie));
+    } catch (e) {
+      currentUser = null;
+    }
+  }
+  if (!currentUser && body?.currentUser && body.currentUser.googleId && body.currentUser.email) {
+    currentUser = body.currentUser;
+  }
+  return currentUser;
 }
 
 function getAppUrl(req: any) {
@@ -183,18 +227,28 @@ function applyReferralRewardsForUser(user: any, state: any) {
 
   const adjustedRefs = refs.map((ref: any) => {
     if (ref.status !== "verified") return ref;
-    if (!ref.referrerRewardApplied && ref.referrerCode === user.googleId) {
+
+    const isReferrerMatch =
+      !ref.referrerRewardApplied &&
+      ((ref.referrerGoogleId && ref.referrerGoogleId === user.googleId) || ref.referrerCode === state.referralCode);
+    if (isReferrerMatch) {
       updatedState.credits = Number(updatedState.credits || 0) + (ref.creditsAwardedReferrer || 45);
       ref.referrerRewardApplied = true;
       ref.referrerRewardAppliedAt = now;
       updated = true;
     }
-    if (!ref.referredRewardApplied && ref.referredGoogleId === user.googleId) {
+
+    const isReferredMatch =
+      !ref.referredRewardApplied &&
+      ((ref.referredGoogleId && ref.referredGoogleId === user.googleId) ||
+        (user.email && ref.referredEmail && ref.referredEmail === user.email));
+    if (isReferredMatch) {
       updatedState.credits = Number(updatedState.credits || 0) + (ref.creditsAwardedReferred || 10);
       ref.referredRewardApplied = true;
       ref.referredRewardAppliedAt = now;
       updated = true;
     }
+
     return ref;
   });
 
@@ -220,6 +274,47 @@ function getReferrals() {
 
 function saveReferrals(items: any[]) {
   writeJsonFile(REFERRAL_FILE, items);
+}
+
+function getVerificationRequests() {
+  return readJsonFile<any[]>(VERIFICATION_FILE, []);
+}
+
+function saveVerificationRequests(items: any[]) {
+  writeJsonFile(VERIFICATION_FILE, items);
+}
+
+function convertVerificationRecord(record: any): any {
+  // Convert Supabase snake_case to camelCase for frontend compatibility
+  if (!record) return null;
+  return {
+    id: record.id,
+    googleId: record.google_id,
+    email: record.email,
+    name: record.name,
+    documentType: record.document_type,
+    documentName: record.document_name,
+    documentPath: record.document_path,
+    documentUrl: record.document_url,
+    documentMimeType: record.document_mime_type,
+    note: record.note,
+    status: record.status,
+    submittedAt: record.submitted_at,
+    reviewedAt: record.reviewed_at,
+    reviewer: record.reviewer,
+    reviewerNotes: record.reviewer_notes,
+  };
+}
+
+function findVerificationRequestForUser(user: any) {
+  if (!user) return null;
+  const requests = getVerificationRequests();
+  return (
+    requests
+      .filter((request: any) => request.googleId === user.googleId || (user.email && request.email === user.email))
+      .sort((a: any, b: any) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime())
+      .pop() || null
+  );
 }
 
 function getGoogleConfig() {
@@ -272,20 +367,32 @@ async function geminiGenerateContent(payload: any, attempt = 1): Promise<any> {
   }
   const model = payload.model || GEMINI_PRIMARY_MODEL;
   const effectiveModel = attempt === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : model;
-  
-  // Log every Gemini request for debugging
-  console.log(`[Gemini Request] Model: ${effectiveModel}, Attempt: ${attempt}/${GEMINI_RETRY_COUNT}, API Key Status: ${rawGeminiKey ? "LOADED" : "MISSING"}`);
-  
+  const requestConfig = {
+    ...(payload.config || {}),
+    httpOptions: {
+      ...(payload.config?.httpOptions || {}),
+      timeout: GEMINI_REQUEST_TIMEOUT_MS,
+    },
+  };
+  const requestPayload = { ...payload, model: effectiveModel, config: requestConfig };
+
+  console.log(`[Gemini Request] Model: ${effectiveModel}, Attempt: ${attempt}/${GEMINI_RETRY_COUNT}, Timeout: ${GEMINI_REQUEST_TIMEOUT_MS}ms, API Key Status: ${rawGeminiKey ? "LOADED" : "MISSING"}`);
+
   try {
-    return await aiClient.models.generateContent({ ...payload, model: effectiveModel });
+    const startMs = Date.now();
+    const result = await aiClient.models.generateContent(requestPayload);
+    console.log(`[Gemini Response] Model: ${effectiveModel}, Attempt: ${attempt}/${GEMINI_RETRY_COUNT}, Duration: ${Date.now() - startMs}ms, Candidates: ${result.candidates?.length ?? 0}`);
+    return result;
   } catch (err: any) {
     const message = String(err?.message || err || "");
     const code = err?.code || err?.status || err?.statusCode;
     const isQuotaExceeded = /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(message) || code === 429;
-    const isRetryable = /503|UNAVAILABLE|high demand|service unavailable/i.test(message) || code === 503;
+    const isTimeout = /timeout|timed out|AbortError|ECONNRESET|ENOTFOUND|EAI_AGAIN|504|408/i.test(message) || code === 408 || code === 504;
+    const isRetryable = isTimeout || /503|UNAVAILABLE|high demand|service unavailable/i.test(message) || code === 503;
     const isModelNotFound = /not found|NOT_FOUND|is not found|not supported|unsupported/i.test(message);
 
-    // Handle quota exceeded
+    console.error(`[Gemini Error] Model: ${effectiveModel}, Attempt: ${attempt}/${GEMINI_RETRY_COUNT}, Code: ${code}, Message: ${message}`);
+
     if (isQuotaExceeded && attempt < GEMINI_RETRY_COUNT) {
       const nextModel = attempt + 1 === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : effectiveModel;
       console.warn(`⚠️ Quota exceeded on model ${effectiveModel} (attempt ${attempt}/${GEMINI_RETRY_COUNT}). Retrying with ${nextModel}...`);
@@ -300,7 +407,7 @@ async function geminiGenerateContent(payload: any, attempt = 1): Promise<any> {
       }
       if (isRetryable) {
         const nextModel = attempt + 1 === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : effectiveModel;
-        console.warn(`Gemini request failed (attempt ${attempt}). Retrying...`);
+        console.warn(`Gemini request failed (attempt ${attempt}). Retrying with model ${nextModel}...`);
         await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
         return geminiGenerateContent({ ...payload, model: nextModel }, attempt + 1);
       }
@@ -510,7 +617,17 @@ async function handleUserState(req: any, res: any) {
     const result = applyReferralRewardsForUser(loggedInUser, state);
     state = result.state;
   }
-  return sendJson(res, { ...state, user: loggedInUser });
+
+  const currentVerificationRequest = loggedInUser ? findVerificationRequestForUser(loggedInUser) : null;
+  const verificationStatus = currentVerificationRequest?.status || "none";
+
+  return sendJson(res, {
+    ...state,
+    user: loggedInUser,
+    verificationRequest: currentVerificationRequest,
+    verificationStatus,
+    studentVerified: verificationStatus === "approved",
+  });
 }
 
 function handleAuthAuditInfo(res: any) {
@@ -527,13 +644,15 @@ async function handleCreateOrder(req: any, res: any, body: any) {
       Gold: 199900,
       Platinum: 499900,
     };
-    const amount = planAmounts[plan] || 29900;
-    const order = await razorpayClient.orders.create({
-      amount,
-      currency: "INR",
-      receipt: `rcpt_${Date.now()}`,
-      notes: { plan: String(plan || "Basic") },
-    });
+    if (!plan || typeof plan !== "string") return sendJson(res, { error: "Plan is required and must be a string." }, 400);
+    const amount = planAmounts[plan] ?? planAmounts.Basic;
+      const order = await razorpayClient.orders.create({
+        amount: Number(amount),
+        currency: "INR",
+        receipt: `rcpt_${Date.now()}`,
+        payment_capture: 1,
+        notes: { plan: String(plan || "Basic") },
+      });
     return sendJson(res, { order, key: RAZORPAY_KEY_ID });
   } catch (err: any) {
     console.error("create-order error:", err);
@@ -541,31 +660,59 @@ async function handleCreateOrder(req: any, res: any, body: any) {
   }
 }
 
-function handleVerifyOrder(req: any, res: any, body: any) {
+async function handleVerifyOrder(req: any, res: any, body: any) {
   try {
     const { razorpay_payment_id, razorpay_order_id, razorpay_signature, plan } = body || {};
     if (!RAZORPAY_KEY_SECRET) return sendJson(res, { error: "Razorpay secret not configured" }, 500);
+    if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature) {
+      return sendJson(res, { error: "Missing required fields for verification" }, 400);
+    }
     const payload = `${razorpay_order_id}|${razorpay_payment_id}`;
     const expected = crypto.createHmac("sha256", RAZORPAY_KEY_SECRET).update(payload).digest("hex");
     const valid = expected === String(razorpay_signature);
     if (!valid) return sendJson(res, { error: "Invalid signature", valid: false }, 400);
+
+    let paymentDetails: any = null;
+    let orderDetails: any = null;
+    try {
+      if (razorpayClient && typeof razorpayClient.payments?.fetch === "function") {
+        paymentDetails = await razorpayClient.payments.fetch(razorpay_payment_id);
+      }
+    } catch (e: any) {
+      console.warn("Failed to fetch payment details from Razorpay:", e?.message || e);
+    }
+    try {
+      if (razorpayClient && typeof razorpayClient.orders?.fetch === "function") {
+        orderDetails = await razorpayClient.orders.fetch(razorpay_order_id);
+      }
+    } catch (e: any) {}
+
+    const paymentStatus = paymentDetails?.status || (body.status || "captured");
+    const amount = paymentDetails?.amount || body.amount || orderDetails?.amount || null;
+
     const state = getUserState();
     if (!state.transactions) state.transactions = [];
-    const amount = body.amount || null;
     const txn = {
       id: razorpay_payment_id,
       order_id: razorpay_order_id,
       plan: plan || "Unknown",
       amount,
-      status: "paid",
+      status: paymentStatus,
       timestamp: new Date().toISOString(),
+      paymentDetails: paymentDetails || null,
     };
     state.transactions.push(txn);
+
     const planCredits: Record<string, number> = { Basic: 25, Medium: 100, Gold: 300, Platinum: 9999 };
-    state.plan = plan || state.plan || "Free";
-    state.credits = planCredits[plan] ?? state.credits;
+    if (paymentStatus === "captured" || paymentStatus === "authorized") {
+      state.plan = plan || state.plan || "Free";
+      state.credits = planCredits[plan] ?? state.credits;
+      saveUserState(state);
+      return sendJson(res, { success: true, txn });
+    }
+
     saveUserState(state);
-    return sendJson(res, { success: true, txn });
+    return sendJson(res, { error: "Payment not captured", status: paymentStatus, txn }, 400);
   } catch (err: any) {
     console.error("verify error:", err);
     return sendJson(res, { error: err.message || "Verification failed" }, 500);
@@ -618,6 +765,233 @@ function handleFeedbackUpdate(res: any, body: any) {
   }
 }
 
+async function handleVerificationSubmit(req: any, res: any, body: any) {
+  try {
+    const currentUser = getAuthenticatedRequestUser(req, body);
+    if (!currentUser) {
+      return sendJson(res, { error: "Authentication required to submit verification." }, 401);
+    }
+
+    const { documentType, documentName, documentPath, documentMimeType, note, documentUrl } = body || {};
+    if (!documentType || !documentName || (!documentPath && !documentUrl)) {
+      return sendJson(res, { error: "documentType, documentName and documentPath or documentUrl are required." }, 400);
+    }
+
+    // Use Supabase if available, otherwise fall back to JSON file storage
+    if (supabaseClient) {
+      try {
+        // Check for existing pending request from this user
+        const { data: existing, error: checkError } = await supabaseClient
+          .from("student_verifications")
+          .select("id, status")
+          .eq("google_id", currentUser.googleId)
+          .in("status", ["pending"])
+          .single();
+
+        if (checkError && checkError.code !== "PGRST116") {
+          // PGRST116 means no rows found, which is fine
+          throw checkError;
+        }
+
+        if (existing) {
+          return sendJson(res, { error: "You already have a pending verification request. Please wait for it to be reviewed." }, 409);
+        }
+
+        const newRequest: any = {
+          id: `ver_${Date.now()}`,
+          user_id: currentUser.googleId,
+          google_id: currentUser.googleId,
+          email: currentUser.email,
+          name: currentUser.name,
+          document_type: documentType,
+          document_name: documentName,
+          document_path: documentPath || null,
+          document_url: documentUrl || null,
+          document_mime_type: documentMimeType || null,
+          note: note || null,
+          status: "pending",
+          submitted_at: new Date().toISOString(),
+          reviewed_at: null,
+          reviewer: null,
+          reviewer_notes: null,
+        };
+
+        const { data: insertedRequest, error: insertError } = await supabaseClient
+          .from("student_verifications")
+          .insert([newRequest])
+          .select()
+          .single();
+
+        if (insertError) throw insertError;
+
+        return sendJson(res, { success: true, request: convertVerificationRecord(insertedRequest) });
+      } catch (err: any) {
+        console.error("Supabase verification submit error:", err);
+        return sendJson(res, { error: err?.message || "Verification submission failed" }, 500);
+      }
+    } else {
+      // Fallback to JSON file storage
+      const requests = getVerificationRequests();
+      
+      // Check for existing pending request
+      const existingPending = requests.find((r: any) => 
+        (r.googleId === currentUser.googleId || r.email === currentUser.email) && 
+        r.status === "pending"
+      );
+      
+      if (existingPending) {
+        return sendJson(res, { error: "You already have a pending verification request. Please wait for it to be reviewed." }, 409);
+      }
+
+      const newRequest: any = {
+        id: `ver_${Date.now()}`,
+        googleId: currentUser.googleId,
+        email: currentUser.email,
+        name: currentUser.name,
+        documentType,
+        documentName,
+        documentPath: documentPath || null,
+        documentUrl: documentUrl || null,
+        documentMimeType: documentMimeType || null,
+        note: note || null,
+        status: "pending",
+        submittedAt: new Date().toISOString(),
+        reviewedAt: null,
+        reviewer: null,
+        reviewerNotes: null,
+      };
+
+      requests.push(newRequest);
+      saveVerificationRequests(requests);
+      return sendJson(res, { success: true, request: newRequest });
+    }
+  } catch (err: any) {
+    return sendJson(res, { error: err.message || "Verification submission failed" }, 500);
+  }
+}
+
+async function handleVerificationMe(req: any, res: any) {
+  try {
+    const currentUser = getAuthenticatedRequestUser(req, req.body);
+    if (!currentUser) {
+      return sendJson(res, { error: "Authentication required" }, 401);
+    }
+
+    if (supabaseClient) {
+      try {
+        const { data: requests, error } = await supabaseClient
+          .from("student_verifications")
+          .select("*")
+          .or(`google_id.eq.${currentUser.googleId},email.eq.${currentUser.email}`)
+          .order("submitted_at", { ascending: false })
+          .limit(1);
+
+        if (error) throw error;
+
+        const request = requests && requests.length > 0 ? convertVerificationRecord(requests[0]) : null;
+        return sendJson(res, { success: true, verificationRequest: request, verificationStatus: request?.status || "none" });
+      } catch (err: any) {
+        console.error("Supabase verification me error:", err);
+        return sendJson(res, { error: err?.message || "Failed to load verification status" }, 500);
+      }
+    } else {
+      const request = findVerificationRequestForUser(currentUser);
+      return sendJson(res, { success: true, verificationRequest: request, verificationStatus: request?.status || "none" });
+    }
+  } catch (err: any) {
+    return sendJson(res, { error: err.message || "Failed to load verification status" }, 500);
+  }
+}
+
+async function handleVerificationRequests(res: any) {
+  try {
+    if (supabaseClient) {
+      try {
+        const { data: requests, error } = await supabaseClient
+          .from("student_verifications")
+          .select("*")
+          .order("submitted_at", { ascending: false });
+
+        if (error) throw error;
+
+        const convertedRequests = (requests || []).map(convertVerificationRecord);
+        return sendJson(res, { success: true, requests: convertedRequests });
+      } catch (err: any) {
+        console.error("Supabase verification requests error:", err);
+        return sendJson(res, { error: err?.message || "Failed to load verification requests" }, 500);
+      }
+    } else {
+      const requests = getVerificationRequests();
+      return sendJson(res, { success: true, requests });
+    }
+  } catch (err: any) {
+    return sendJson(res, { error: err.message || "Failed to load verification requests" }, 500);
+  }
+}
+
+async function handleVerificationReview(req: any, res: any, body: any) {
+  try {
+    const currentUser = getAuthenticatedRequestUser(req, body);
+    if (!currentUser) {
+      return sendJson(res, { error: "Authentication required to review verification requests." }, 401);
+    }
+
+    const { requestId, status, reviewerNotes } = body || {};
+    if (!requestId || !["approved", "rejected"].includes(status)) {
+      return sendJson(res, { error: "requestId and status (approved/rejected) are required." }, 400);
+    }
+
+    if (supabaseClient) {
+      try {
+        const { data: existing, error: fetchError } = await supabaseClient
+          .from("student_verifications")
+          .select("*")
+          .eq("id", requestId)
+          .single();
+
+        if (fetchError) throw fetchError;
+        if (!existing) {
+          return sendJson(res, { error: "Verification request not found." }, 404);
+        }
+
+        const { data: updated, error: updateError } = await supabaseClient
+          .from("student_verifications")
+          .update({
+            status: status,
+            reviewed_at: new Date().toISOString(),
+            reviewer: currentUser.email || currentUser.googleId || "unknown",
+            reviewer_notes: reviewerNotes || null,
+          })
+          .eq("id", requestId)
+          .select()
+          .single();
+
+        if (updateError) throw updateError;
+
+        return sendJson(res, { success: true, request: convertVerificationRecord(updated) });
+      } catch (err: any) {
+        console.error("Supabase verification review error:", err);
+        return sendJson(res, { error: err?.message || "Verification review failed" }, 500);
+      }
+    } else {
+      const requests = getVerificationRequests();
+      const existing = requests.find((item: any) => item.id === requestId);
+      if (!existing) {
+        return sendJson(res, { error: "Verification request not found." }, 404);
+      }
+
+      existing.status = status;
+      existing.reviewedAt = new Date().toISOString();
+      existing.reviewer = currentUser.email || currentUser.googleId || "unknown";
+      existing.reviewerNotes = reviewerNotes || null;
+      saveVerificationRequests(requests);
+      return sendJson(res, { success: true, request: existing });
+    }
+  } catch (err: any) {
+    return sendJson(res, { error: err.message || "Verification review failed" }, 500);
+  }
+}
+
 function handleReferralCreate(res: any, body: any) {
   try {
     const { referrerCode, referredEmail, referredGoogleId, ip } = body || {};
@@ -649,21 +1023,22 @@ function handleReferralApply(req: any, res: any, body: any) {
     const { referrerCode, referredEmail, referredGoogleId, referredName, referredIp } = body || {};
     if (!referrerCode) return sendJson(res, { error: "Missing referrerCode" }, 400);
     if (!referredEmail && !referredGoogleId) return sendJson(res, { error: "A referredEmail or referredGoogleId is required" }, 400);
-    const sessionCookie = getCookieValue(req, "google_auth_session");
-    let currentUser: any = null;
-    if (sessionCookie) {
-      try {
-        currentUser = JSON.parse(decodeURIComponent(sessionCookie));
-      } catch (e) {
-        currentUser = null;
-      }
-    }
+    const currentUser: any = getAuthenticatedRequestUser(req, body);
     if (!currentUser) {
       return sendJson(res, { error: "Authentication required to claim referral" }, 401);
     }
-    if (currentUser.googleId === referrerCode) {
+
+    const isMatchingReferredUser =
+      (referredGoogleId && currentUser.googleId === referredGoogleId) ||
+      (referredEmail && currentUser.email === referredEmail);
+    if (!isMatchingReferredUser) {
+      return sendJson(res, { error: "Referral must be claimed by the signed-in referred user." }, 400);
+    }
+
+    if (currentUser.googleId === referrerCode || currentUser.email === referrerCode) {
       return sendJson(res, { error: "Self-referrals are not allowed" }, 400);
     }
+
     const refs = getReferrals();
     const duplicate = refs.find((r: any) =>
       (referredGoogleId && r.referredGoogleId === referredGoogleId) ||
@@ -675,10 +1050,12 @@ function handleReferralApply(req: any, res: any, body: any) {
       }
       return sendJson(res, { error: "A referral already exists for this user" }, 409);
     }
+
     const now = new Date().toISOString();
     const newRef = {
       id: `ref_${Date.now()}`,
       referrerCode,
+      referrerGoogleId: currentUser.googleId === referrerCode ? currentUser.googleId : null,
       referrerName: null,
       referrerEmail: null,
       referredGoogleId: referredGoogleId || null,
@@ -690,15 +1067,21 @@ function handleReferralApply(req: any, res: any, body: any) {
       creditsAwardedReferrer: 45,
       creditsAwardedReferred: 10,
       referrerRewardApplied: false,
+      referrerRewardAppliedAt: null,
       referredRewardApplied: false,
+      referredRewardAppliedAt: null,
       ip: referredIp || getRequestIp(req) || null,
     };
     refs.push(newRef);
     saveReferrals(refs);
+
     const state = getUserState();
     let updatedState = { ...state };
     if (currentUser.googleId === referredGoogleId || currentUser.email === referredEmail) {
       updatedState.credits = Number(updatedState.credits || 0) + 10;
+      newRef.referredRewardApplied = true;
+      newRef.referredRewardAppliedAt = now;
+      saveReferrals(refs);
       saveUserState(updatedState);
     }
     return sendJson(res, { success: true, referral: newRef, updatedState });
@@ -759,7 +1142,9 @@ function handleDiscountCurrent(res: any, query: any) {
     const referralCount = refs.filter((r: any) => r.referrerCode === user?.referralCode && r.status === "verified").length;
     const referralDiscount = Math.min(50, referralCount * 10);
     discount = Math.max(discount, referralDiscount);
-    if (user && user.studentVerified) discount = Math.max(discount, 60);
+    const currentVerificationRequest = user ? findVerificationRequestForUser(user) : null;
+    const studentVerified = currentVerificationRequest?.status === "approved";
+    if (studentVerified) discount = Math.max(discount, 60);
     return sendJson(res, { discount, referralCount });
   } catch (err: any) {
     return sendJson(res, { error: err.message || "fail" }, 500);
@@ -1382,6 +1767,10 @@ export default async function handler(req: any, res: any) {
     if (endpoint === "referral/apply" && method === "POST") return handleReferralApply(req, res, body);
     if (endpoint === "referral/dashboard" && method === "GET") return handleReferralDashboard(req, res, query);
     if (endpoint === "discount/current" && method === "GET") return handleDiscountCurrent(res, query);
+    if (endpoint === "verification/me" && method === "GET") return await handleVerificationMe(req, res);
+    if (endpoint === "verification/requests" && method === "GET") return await handleVerificationRequests(res);
+    if (endpoint === "verification/submit" && method === "POST") return await handleVerificationSubmit(req, res, body);
+    if (endpoint === "verification/review" && method === "POST") return await handleVerificationReview(req, res, body);
     if (endpoint === "auth/save-config" && method === "POST") return handleAuthSaveConfig(res, body);
     if (endpoint === "auth/reset-config" && method === "POST") return handleAuthResetConfig(res);
     if (endpoint === "api-key-status" && method === "GET") return handleApiKeyStatus(res);

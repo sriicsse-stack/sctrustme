@@ -48,3 +48,44 @@ create policy "Allow authenticated users to update their own projects" on projec
 create policy "Allow authenticated users to delete their own projects" on projects
   for delete
   using (owner_id = auth.uid());
+
+-- Student verifications table: stores verification requests submitted by users.
+create table if not exists student_verifications (
+  id text primary key,
+  user_id text not null,
+  google_id text,
+  email text,
+  name text,
+  document_type text,
+  document_name text,
+  document_path text,
+  document_url text,
+  document_mime_type text,
+  note text,
+  status text default 'pending', -- pending, approved, rejected
+  submitted_at timestamptz default now(),
+  reviewed_at timestamptz,
+  reviewer text,
+  reviewer_notes text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+alter table student_verifications enable row level security;
+
+create policy "Allow authenticated users to insert their own verification" on student_verifications
+  for insert
+  with check (true);
+
+create policy "Allow authenticated users to read their own verification" on student_verifications
+  for select
+  using (true);
+
+create policy "Allow all to read verifications" on student_verifications
+  for select
+  using (true);
+
+create policy "Allow all to manage verifications" on student_verifications
+  for all
+  using (true)
+  with check (true);

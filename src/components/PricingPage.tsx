@@ -63,6 +63,9 @@ export default function PricingPage({
   const [cardExpiry, setCardExpiry] = useState("12/28");
   const [cardCvc, setCardCvc] = useState("123");
   const [checkoutStep, setCheckoutStep] = useState<"details" | "completing" | "success">("details");
+  const [approvedCount, setApprovedCount] = useState<number | null>(null);
+  const [userVerificationStatus, setUserVerificationStatus] = useState<string | null>(null);
+  const STUDENT_OFFER_LIMIT = 6;
 
   useEffect(() => {
     if (claimOfferTriggered && offerActive) {
@@ -83,6 +86,37 @@ export default function PricingPage({
     return () => clearInterval(timer);
   }, []);
 
+  // Fetch verification stats and user verification status
+  useEffect(() => {
+    let mounted = true;
+    const loadStats = async () => {
+      try {
+        const res = await fetch("/api/verification/requests");
+        if (!res.ok) return;
+        const data = await res.json();
+        const approved = Array.isArray(data.requests) ? data.requests.filter((r: any) => r.status === 'approved').length : 0;
+        if (mounted) setApprovedCount(approved);
+      } catch (e) {
+        // ignore
+      }
+
+      try {
+        const me = await fetch("/api/verification/me");
+        if (me.ok) {
+          const mj = await me.json();
+          if (mounted) setUserVerificationStatus(mj.verificationStatus || null);
+        } else {
+          if (mounted) setUserVerificationStatus(null);
+        }
+      } catch (e) {
+        if (mounted) setUserVerificationStatus(null);
+      }
+    };
+    loadStats();
+    const poll = setInterval(() => loadStats(), 10_000);
+    return () => { mounted = false; clearInterval(poll); };
+  }, []);
+
   const formatTime = (totalSeconds: number) => {
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -93,7 +127,39 @@ export default function PricingPage({
   const handlePlanClick = (planName: string, price: string, credits: number, isUnlimited: boolean) => {
     // Directly start payment flow via Razorpay
     const plan = { name: planName, price, credits, isUnlimited };
-    createOrderAndOpen(plan);
+    // Student offer enforcement: only allow discounted Basic if user is approved and there are remaining slots
+    try {
+      const remaining = typeof approvedCount === 'number' ? Math.max(0, STUDENT_OFFER_LIMIT - approvedCount) : null;
+      if (plan.name === 'Basic') {
+        // If we have computed remaining and it's zero, fall back to normal price
+        if (remaining === 0) {
+          // Offer closed — open regular order at ₹499
+          createOrderAndOpen({ ...plan, price: '₹499' });
+          return;
+        }
+
+        // If user is verified, allow discounted flow
+        if (userVerificationStatus === 'approved') {
+          createOrderAndOpen({ ...plan, price: '₹299' });
+          return;
+        }
+
+        // Not verified — redirect user to verification page
+        alert('Student offer is available only for verified students. You will be redirected to the verification page to submit documents.');
+        try {
+          // Minimal navigation without changing app routing logic
+          window.location.href = `${window.location.origin}/?tab=verification`;
+        } catch (e) {
+          // fallback: open student verification page in new tab
+          window.open('/?tab=verification', '_self');
+        }
+        return;
+      }
+
+      createOrderAndOpen(plan);
+    } catch (e) {
+      createOrderAndOpen(plan);
+    }
   };
 
   const handleCompleteUpgrade = () => {
@@ -115,8 +181,9 @@ export default function PricingPage({
   const plans = [
     {
       name: "Basic",
-      price: offerActive ? "₹299" : "₹499",
-      originalPrice: offerActive ? "₹499" : null,
+      // Basic price is shown as student offer only when slots remain and user is approved.
+      price: (approvedCount !== null && approvedCount < STUDENT_OFFER_LIMIT && userVerificationStatus === 'approved') ? "₹299" : "₹499",
+      originalPrice: (approvedCount !== null && approvedCount < STUDENT_OFFER_LIMIT && userVerificationStatus === 'approved') ? "₹499" : null,
       period: "month",
       desc: "Perfect for students and beginners.",
       credits: 25,
@@ -464,13 +531,23 @@ export default function PricingPage({
                   </div>
 
                   <div>
-                    <div className="flex items-baseline gap-1">
+                      <div className="flex items-baseline gap-1">
                       <span className="text-3xl font-extrabold tracking-tight text-white mb-0.5">{plan.price}</span>
                       {(plan as any).originalPrice && (
                         <span className="text-xs text-red-500 font-semibold line-through ml-1.5 my-auto">{(plan as any).originalPrice}</span>
                       )}
                       <span className="text-xs text-slate-500 font-mono">/{plan.period}</span>
                     </div>
+                    {/* Student offer remaining counter shown on Basic plan */}
+                    {plan.name === 'Basic' && (
+                      <div className="mt-2 text-xs text-slate-400">
+                        {approvedCount === null ? (
+                          <span>Student Offer Remaining: calculating…</span>
+                        ) : (
+                          <span>Student Offer Remaining: {Math.max(0, STUDENT_OFFER_LIMIT - approvedCount)} / {STUDENT_OFFER_LIMIT}</span>
+                        )}
+                      </div>
+                    )}
                     <p className="text-[11.5px] text-slate-400 font-sans leading-normal h-8 mt-1 border-b border-white/[0.03] pb-2.5">
                       {plan.desc}
                     </p>

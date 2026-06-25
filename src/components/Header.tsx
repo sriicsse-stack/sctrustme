@@ -34,8 +34,8 @@ interface HeaderProps {
   hasApiKey: boolean | null;
   
   // Custom interactive channels & billing stats
-  activeGlobalTab: "workspace" | "sri-ai" | "pricing" | "referral";
-  setActiveGlobalTab: (tab: "workspace" | "sri-ai" | "pricing" | "referral") => void;
+  activeGlobalTab: "workspace" | "sri-ai" | "pricing" | "referral" | "verification";
+  setActiveGlobalTab: (tab: "workspace" | "sri-ai" | "pricing" | "referral" | "verification") => void;
   credits: number;
   plan: string;
   onOpenBilling: () => void;
@@ -204,6 +204,28 @@ export default function Header({
 
         <button
           onClick={() => {
+            setActiveGlobalTab("verification");
+          }}
+          className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-2 text-[11.5px] sm:text-xs font-bold rounded-lg cursor-pointer whitespace-nowrap relative transition-colors ${
+            activeGlobalTab === "verification" ? "text-white" : "text-slate-400 hover:text-white"
+          }`}
+        >
+          {activeGlobalTab === "verification" && (
+            <motion.span
+              layoutId="activeGlobalTabBackground"
+              className="absolute inset-0 bg-blue-600 rounded-lg shadow-md shadow-blue-900/30"
+              transition={{ type: "spring", stiffness: 350, damping: 28 }}
+            />
+          )}
+          <span className="relative z-10 flex items-center gap-1.5 sm:gap-2">
+            <ShieldCheck className="h-3.5 w-3.5 font-bold shrink-0 text-sky-300" />
+            <span className="hidden sm:inline">Verification</span>
+            <span className="inline sm:hidden">Verify</span>
+          </span>
+        </button>
+
+        <button
+          onClick={() => {
             setActiveGlobalTab("referral");
           }}
           className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-2 text-[11.5px] sm:text-xs font-bold rounded-lg cursor-pointer whitespace-nowrap relative transition-colors ${
@@ -221,38 +243,6 @@ export default function Header({
             <Users className="h-3.5 w-3.5 font-bold shrink-0 text-emerald-400 animate-pulse" />
             <span className="hidden sm:inline">🎁 Earn Credits</span>
             <span className="inline sm:hidden">🎁 Refer</span>
-          </span>
-        </button>
-
-        <button
-          onClick={() => {
-            setActiveGlobalTab("pricing");
-          }}
-          className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-2 text-[11.5px] sm:text-xs font-bold rounded-lg cursor-pointer whitespace-nowrap relative transition-colors ${
-            activeGlobalTab === "pricing" ? "text-white" : "text-slate-400 hover:text-white"
-          }`}
-        >
-          {activeGlobalTab === "pricing" && (
-            <motion.span
-              layoutId="activeGlobalTabBackground"
-              className="absolute inset-0 bg-[#6366F1] rounded-lg shadow-md shadow-indigo-900/35 border border-indigo-500/20"
-              transition={{ type: "spring", stiffness: 350, damping: 28 }}
-            />
-          )}
-          <span className="relative z-10 flex items-center gap-1.5 sm:gap-2">
-            <CreditCard className="h-3.5 w-3.5 font-bold text-indigo-400 shrink-0" />
-            <span className="hidden sm:inline">💎 Pricing Plans</span>
-            <span className="inline sm:hidden">Pricing</span>
-            {offerActive ? (
-              <span className="hidden md:inline-flex items-center gap-0.5 text-[8.5px] font-black uppercase font-mono px-1 py-0.5 rounded ml-1 animate-pulse bg-gradient-to-r from-red-600 via-amber-500 to-amber-600 text-white shadow shadow-red-950">
-                🔥 Promo
-              </span>
-            ) : (
-              <span className="absolute -top-1 -right-1 block h-1.5 w-1.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-1 w-1 bg-indigo-500"></span>
-              </span>
-            )}
           </span>
         </button>
       </div>

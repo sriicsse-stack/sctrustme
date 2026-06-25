@@ -56,6 +56,7 @@ import DeploymentConsole from "./components/DeploymentConsole";
 import ProjectHistory from "./components/ProjectHistory";
 import PricingPage from "./components/PricingPage";
 import SriAICore from "./components/SriAICore";
+import StudentVerification from "./components/StudentVerification";
 import { ProjectDetails, ProjectSummary } from "./types";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
 
@@ -66,7 +67,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<"preview" | "code" | "deploy">("preview");
   
   // Custom global nav: "workspace" or "sri-ai" or "pricing" or "referral"
-  const [activeGlobalTab, setActiveGlobalTab] = useState<"workspace" | "sri-ai" | "pricing" | "referral">("workspace");
+  const [activeGlobalTab, setActiveGlobalTab] = useState<"workspace" | "sri-ai" | "pricing" | "referral" | "verification">("workspace");
 
   // Interaction states
   const [isGenerating, setIsGenerating] = useState(false);
@@ -202,14 +203,33 @@ export default function App() {
     };
   };
 
+  const writeAuthSessionCookie = (user: any) => {
+    if (typeof document === "undefined") return;
+    try {
+      const cookieValue = encodeURIComponent(JSON.stringify(user));
+      const secure = window.location.protocol === "https:";
+      const sameSite = secure ? "None" : "Lax";
+      document.cookie = `google_auth_session=${cookieValue}; Path=/; SameSite=${sameSite};${secure ? " Secure;" : ""}`;
+    } catch (e) {
+      console.warn("Failed to write auth session cookie", e);
+    }
+  };
+
+  const clearAuthSessionCookie = () => {
+    if (typeof document === "undefined") return;
+    document.cookie = "google_auth_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax;";
+  };
+
   const handleSupabaseSessionChange = (session: any) => {
     if (!session) {
+      clearAuthSessionCookie();
       setUserState(prev => ({ ...prev, user: null }));
       return;
     }
 
     const legacyUser = convertSupabaseSessionToLegacyUser(session);
     setUserState(prev => ({ ...prev, user: legacyUser }));
+    writeAuthSessionCookie(legacyUser);
 
     // Defensive: ensure any fullscreen/modal state is closed immediately after login
     try {
@@ -280,17 +300,39 @@ export default function App() {
   }, [isMicMuted]);
 
   const retryMicrophone = async () => {
+    const wasError = voiceCallStateRef.current === 'error';
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         addVoiceLog('Requesting microphone permission (retry)...', 'info');
         const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-        s.getTracks().forEach(t=>t.stop());
+        s.getTracks().forEach(t => t.stop());
         addVoiceLog('Microphone ready — restarting voice engine', 'success');
+        if (wasError) {
+          setVoiceCallState('listening');
+          voiceCallStateRef.current = 'listening';
+        }
         if (isVoiceCallActiveRef.current) startVoiceRecognition(true);
       }
-    } catch (e:any) {
-      addVoiceLog('Retry failed: ' + (e.message||e), 'error');
+    } catch (e: any) {
+      addVoiceLog('Retry failed: ' + (e.message || e), 'error');
+      setVoiceCallState('error');
+      voiceCallStateRef.current = 'error';
     }
+  };
+
+  const cleanupRecognition = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.stop();
+      } catch (e) {
+        console.warn('Failed to cleanup speech recognition instance', e);
+      }
+      recognitionRef.current = null;
+    }
+    setRecognitionInstance(null);
+    setIsVoiceListening(false);
   };
 
   const toggleMicMute = () => {
@@ -465,6 +507,32 @@ export default function App() {
 
     const initSupabaseSession = async () => {
       try {
+        // First, attempt to complete OAuth redirect flow if present in URL.
+        // This ensures the session is restored immediately after provider redirect.
+        try {
+          // getSessionFromUrl will parse the redirect URL and populate the client session
+          // (recommended for OAuth flows where a redirect lands on the app).
+          // If no redirect params present it will simply return null.
+          // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+          // @ts-ignore
+          const fromUrl = await supabase.auth.getSessionFromUrl();
+          if (fromUrl?.data?.session) {
+            handleSupabaseSessionChange(fromUrl.data.session);
+            // clear the URL fragment/query params that may contain tokens
+            try {
+              const url = new URL(window.location.href);
+              url.hash = "";
+              url.search = "";
+              window.history.replaceState({}, document.title, url.toString());
+            } catch (e) {
+              // ignore
+            }
+            return;
+          }
+        } catch (e) {
+          // Some runtimes may not have getSessionFromUrl — fallback to getSession below
+        }
+
         const {
           data: { session },
           error,
@@ -486,8 +554,18 @@ export default function App() {
     initSupabaseSession();
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      handleSupabaseSessionChange(session);
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      // Only explicitly clear the app session on a SIGNED_OUT event.
+      // For other events, if a session object is present, restore it.
+      try {
+        if (event === "SIGNED_OUT") {
+          handleSupabaseSessionChange(null);
+        } else if (session) {
+          handleSupabaseSessionChange(session);
+        }
+      } catch (e) {
+        console.warn('Error handling auth state change', e);
+      }
     });
 
     return () => {
@@ -1365,14 +1443,7 @@ export default function App() {
 
     try {
       // Clean up previous instance before sparking new recorder
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.onend = null;
-          recognitionRef.current.onerror = null;
-          recognitionRef.current.stop();
-        } catch(e){}
-        recognitionRef.current = null;
-      }
+      cleanupRecognition();
 
       const rec = new SpeechRecognition();
       rec.continuous = true; 
@@ -1415,17 +1486,19 @@ export default function App() {
           if (currentText.length > 3) {
             const detectedCode = detectSpeechLanguage(currentText);
             if (detectedCode !== rec.lang) {
-              rec.lang = detectedCode;
+              try {
+                rec.lang = detectedCode;
+              } catch (err) {
+                console.warn('Failed to update recognition language', err);
+              }
             }
           }
 
-          // Debounce continuous speech: wait for 1.2 seconds of silence to submit (faster responsiveness)
-          // Debounce continuous speech: wait for 1.8 seconds of silence to submit
           if (silenceTimer) clearTimeout(silenceTimer);
           silenceTimer = setTimeout(() => {
             addVoiceLog("Silence detected - Processing speech...", "info");
             setVoiceCallState("thinking");
-            try { rec.stop(); } catch(e){}
+            try { rec.stop(); } catch (e) {}
           }, 1200);
         }
       };
@@ -1433,29 +1506,46 @@ export default function App() {
       rec.onerror = (e: any) => {
         if (silenceTimer) clearTimeout(silenceTimer);
         console.error("Speech Recognition Error:", e);
-        
-        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+
+        const errorCode = typeof e === 'string' ? e : e?.error || "unknown";
+        const isFatalPermission = errorCode === "not-allowed" || errorCode === "service-not-allowed";
+        const isNetworkError = errorCode === "network";
+        const isTransientRetry = ["no-speech", "aborted"].includes(errorCode);
+
+        if (isFatalPermission) {
           addVoiceLog("Mic permission denied inside recognition stream.", "error");
+          setVoiceTranscript("Microphone permission denied. Please allow microphone access and retry.");
           setVoiceCallState("error");
-          setIsVoiceListening(false);
-          // Offer auto-fix suggestion
+          voiceCallStateRef.current = "error";
+          cleanupRecognition();
           addVoiceLog("Suggestion: Ensure microphone access for this site in browser settings, then click 'Retry Mic'", "info");
           return;
         }
 
-        addVoiceLog(`Signal check: ${e.error}`, "warn");
+        if (isNetworkError) {
+          addVoiceLog("Speech recognition network error detected.", "error");
+          setVoiceTranscript("Speech recognition network error. Retry microphone or refresh the page.");
+          setVoiceCallState("error");
+          voiceCallStateRef.current = "error";
+          cleanupRecognition();
+          addVoiceLog("Please check browser network access or try again after reloading the page.", "info");
+          return;
+        }
 
-        if (isVoiceCallActiveRef.current && voiceCallStateRef.current !== "error") {
-          // Auto recover or repeat on no speech or connection transient disruptions
-          if (["no-speech", "aborted", "network"].includes(e.error)) {
-            setTimeout(() => {
-              if (isVoiceCallActiveRef.current && voiceCallStateRef.current !== "error") {
-                startVoiceRecognition(true);
-              }
-            }, 500);
-          }
+        addVoiceLog(`Signal check: ${errorCode}`, "warn");
+
+        if (isTransientRetry && isVoiceCallActiveRef.current && voiceCallStateRef.current !== "error") {
+          cleanupRecognition();
+          setTimeout(() => {
+            if (isVoiceCallActiveRef.current && voiceCallStateRef.current !== "error") {
+              startVoiceRecognition(true);
+            }
+          }, 500);
         } else {
-          setIsVoiceListening(false);
+          cleanupRecognition();
+          if (voiceCallStateRef.current !== "error") {
+            setVoiceCallState("idle");
+          }
         }
       };
 
@@ -1463,20 +1553,23 @@ export default function App() {
         if (silenceTimer) clearTimeout(silenceTimer);
         setIsVoiceListening(false);
         const finalCleaned = collectedTranscript.trim();
-        
+        cleanupRecognition();
+
         if (finalCleaned && finalCleaned !== "... (Listening...) ...") {
           addVoiceLog(`Transcript Generated: "${finalCleaned}"`, "success");
           setVoiceCallState("thinking");
           handleVoiceCommandSubmit(finalCleaned);
+        } else if (voiceCallStateRef.current === "error") {
+          addVoiceLog("Voice recognition ended while an error state is active. Waiting for user retry.", "warn");
         } else {
           addVoiceLog("Continuous session waiting for voice input...", "info");
-          if (isVoiceCallActiveRef.current && voiceCallStateRef.current !== "error") {
+          if (isVoiceCallActiveRef.current) {
             setTimeout(() => {
               if (isVoiceCallActiveRef.current && voiceCallStateRef.current !== "error") {
                 startVoiceRecognition(true);
               }
             }, 600);
-          } else if (!isVoiceCallActiveRef.current) {
+          } else {
             setVoiceCallState("idle");
           }
         }
@@ -1498,16 +1591,7 @@ export default function App() {
     isVoiceCallActiveRef.current = false;
     setVoiceCallState("idle");
     setIsVoiceListening(false);
-    
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.onend = null;
-        recognitionRef.current.onerror = null;
-        recognitionRef.current.stop();
-      } catch (e) {}
-      recognitionRef.current = null;
-    }
-    setRecognitionInstance(null);
+    cleanupRecognition();
 
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
@@ -1887,6 +1971,11 @@ export default function App() {
             </span>
           </div>
         </div>
+      ) : activeGlobalTab === "verification" ? (
+        <StudentVerification
+          currentUser={userState.user}
+          onStatusChanged={fetchUserState}
+        />
       ) : activeGlobalTab === "referral" ? (
         <ReferralEarnView
           isLoggedIn={!!userState.user}
