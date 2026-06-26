@@ -20,6 +20,108 @@ const supabaseClient =
       })
     : null;
 
+const SUPABASE_PROJECT_TABLE = "projects";
+
+function convertSupabaseProject(record: any) {
+  if (!record) return null;
+  return {
+    id: record.id,
+    ownerId: record.owner_id,
+    name: record.name,
+    description: record.description,
+    prompt: record.prompt,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+    previewHtml: record.preview_html,
+    deployments: record.deployments || [],
+    files: record.files || [],
+    analysis: record.analysis || null,
+    autoDiagnosticReport: record.auto_diagnostic_report || null,
+  };
+}
+
+async function fetchSupabaseProjects(userId: string) {
+  if (!supabaseClient || !userId) return null;
+  const { data, error } = await supabaseClient
+    .from(SUPABASE_PROJECT_TABLE)
+    .select("*")
+    .eq("owner_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.warn("Supabase fetch projects error:", error);
+    return null;
+  }
+  return (data || []).map(convertSupabaseProject).filter(Boolean);
+}
+
+async function fetchSupabaseProjectById(projectId: string, userId?: string) {
+  if (!supabaseClient) return null;
+  let query = supabaseClient.from(SUPABASE_PROJECT_TABLE).select("*").eq("id", projectId).limit(1);
+  if (userId) query = query.eq("owner_id", userId);
+  const { data, error } = await query;
+  if (error) {
+    console.warn("Supabase fetch project by id error:", error);
+    return null;
+  }
+  const record = Array.isArray(data) ? data[0] : data;
+  return convertSupabaseProject(record);
+}
+
+async function saveProjectToSupabase(project: any, user: any) {
+  if (!supabaseClient || !user?.googleId) return null;
+  const payload = {
+    id: project.id,
+    owner_id: user.googleId,
+    name: project.name,
+    description: project.description,
+    prompt: project.prompt,
+    preview_html: project.previewHtml,
+    deployments: project.deployments || [],
+    files: project.files || [],
+    analysis: project.analysis || null,
+    auto_diagnostic_report: project.autoDiagnosticReport || null,
+    created_at: project.createdAt || new Date().toISOString(),
+    updated_at: project.updatedAt || new Date().toISOString(),
+  };
+
+  const { data, error } = await supabaseClient.from(SUPABASE_PROJECT_TABLE).upsert(payload).select().single();
+  if (error) {
+    console.warn("Supabase save project error:", error);
+    return null;
+  }
+  return convertSupabaseProject(data);
+}
+
+async function updateProjectInSupabase(project: any, user: any) {
+  if (!supabaseClient || !user?.googleId) return null;
+  const payload = {
+    name: project.name,
+    description: project.description,
+    prompt: project.prompt,
+    preview_html: project.previewHtml,
+    deployments: project.deployments || [],
+    files: project.files || [],
+    analysis: project.analysis || null,
+    auto_diagnostic_report: project.autoDiagnosticReport || null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabaseClient
+    .from(SUPABASE_PROJECT_TABLE)
+    .update(payload)
+    .eq("id", project.id)
+    .eq("owner_id", user.googleId)
+    .select()
+    .single();
+
+  if (error) {
+    console.warn("Supabase update project error:", error);
+    return null;
+  }
+  return convertSupabaseProject(data);
+}
+
 let cachedDataDir: string | null = null;
 function getDataDir(): string {
   if (cachedDataDir) return cachedDataDir;
@@ -115,7 +217,7 @@ let aiClient: GoogleGenAI | null = null;
 const GEMINI_PRIMARY_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-2.0-flash";
 const GEMINI_RETRY_COUNT = 4;
-const GEMINI_REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_REQUEST_TIMEOUT_MS || 9000);
+const GEMINI_REQUEST_TIMEOUT_MS = Math.max(10000, Number(process.env.GEMINI_REQUEST_TIMEOUT_MS || 18000) || 18000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 // Log startup diagnostics
@@ -202,6 +304,13 @@ function getAuthenticatedRequestUser(req: any, body: any = {}) {
   if (!currentUser && body?.currentUser && body.currentUser.googleId && body.currentUser.email) {
     currentUser = body.currentUser;
   }
+  if (!currentUser && body?.supabaseSession?.user) {
+    currentUser = {
+      googleId: body.supabaseSession.user.id,
+      email: body.supabaseSession.user.email,
+      name: body.supabaseSession.user.user_metadata?.full_name || body.supabaseSession.user.email,
+    };
+  }
   return currentUser;
 }
 
@@ -230,7 +339,11 @@ function applyReferralRewardsForUser(user: any, state: any) {
 
     const isReferrerMatch =
       !ref.referrerRewardApplied &&
-      ((ref.referrerGoogleId && ref.referrerGoogleId === user.googleId) || ref.referrerCode === state.referralCode);
+      ((ref.referrerGoogleId && ref.referrerGoogleId === user.googleId) ||
+        (ref.referrerEmail && user.email && ref.referrerEmail === user.email) ||
+        ref.referrerCode === state.referralCode ||
+        ref.referrerCode === user.googleId ||
+        (user.email && ref.referrerCode === user.email));
     if (isReferrerMatch) {
       updatedState.credits = Number(updatedState.credits || 0) + (ref.creditsAwardedReferrer || 45);
       ref.referrerRewardApplied = true;
@@ -371,7 +484,7 @@ async function geminiGenerateContent(payload: any, attempt = 1): Promise<any> {
     ...(payload.config || {}),
     httpOptions: {
       ...(payload.config?.httpOptions || {}),
-      timeout: GEMINI_REQUEST_TIMEOUT_MS,
+      timeout: Math.max(10000, payload?.config?.httpOptions?.timeout || GEMINI_REQUEST_TIMEOUT_MS),
     },
   };
   const requestPayload = { ...payload, model: effectiveModel, config: requestConfig };
@@ -407,8 +520,9 @@ async function geminiGenerateContent(payload: any, attempt = 1): Promise<any> {
       }
       if (isRetryable) {
         const nextModel = attempt + 1 === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : effectiveModel;
-        console.warn(`Gemini request failed (attempt ${attempt}). Retrying with model ${nextModel}...`);
-        await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+        const backoffMs = Math.min(3000, 600 * attempt);
+        console.warn(`Gemini request failed (attempt ${attempt}). Retrying with model ${nextModel} after ${backoffMs}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
         return geminiGenerateContent({ ...payload, model: nextModel }, attempt + 1);
       }
     }
@@ -614,6 +728,7 @@ async function handleUserState(req: any, res: any) {
     }
   }
   if (loggedInUser) {
+    state = { ...state, referralCode: loggedInUser.googleId || state.referralCode };
     const result = applyReferralRewardsForUser(loggedInUser, state);
     state = result.state;
   }
@@ -1459,7 +1574,7 @@ async function handleSriAi(req: any, res: any, body: any) {
   }
 }
 
-async function handleGenerate(res: any, body: any) {
+async function handleGenerate(req: any, res: any, body: any) {
   console.log(`[API Handler] generate endpoint called`);
   console.log(`[API Handler] Gemini Model: ${GEMINI_PRIMARY_MODEL}, API Key Loaded: ${rawGeminiKey ? "YES" : "NO"}`);
   
@@ -1565,6 +1680,13 @@ async function handleGenerate(res: any, body: any) {
       createdAt: new Date().toISOString(),
       deployments: [],
     };
+    const currentUser = getAuthenticatedRequestUser(req, body);
+    if (supabaseClient && currentUser) {
+      const saved = await saveProjectToSupabase(newProject, currentUser);
+      if (saved) {
+        return sendJson(res, saved);
+      }
+    }
     projects.push(newProject);
     saveProjects(projects);
     return sendJson(res, newProject);
@@ -1574,7 +1696,7 @@ async function handleGenerate(res: any, body: any) {
   }
 }
 
-async function handleRefine(res: any, body: any) {
+async function handleRefine(req: any, res: any, body: any) {
   const { projectId, prompt, files } = body || {};
   if (!projectId || !prompt) {
     return sendJson(res, { error: "projectId and prompt are required." }, 400);
@@ -1624,6 +1746,13 @@ async function handleRefine(res: any, body: any) {
     targetProject.files = repairedProject.files;
     targetProject.previewHtml = repairedProject.previewHtml;
     targetProject.autoDiagnosticReport = diagnosticReport;
+    const currentUser = getAuthenticatedRequestUser(req, body);
+    if (supabaseClient && currentUser) {
+      const updated = await updateProjectInSupabase(targetProject, currentUser);
+      if (updated) {
+        return sendJson(res, updated);
+      }
+    }
     saveProjects(projects);
     return sendJson(res, targetProject);
   } catch (error: any) {
@@ -1632,19 +1761,33 @@ async function handleRefine(res: any, body: any) {
   }
 }
 
-function handleProjectsList(res: any) {
+async function handleProjectsList(req: any, res: any) {
+  const currentUser = getAuthenticatedRequestUser(req, req.body);
+  if (supabaseClient && currentUser) {
+    const supabaseProjects = await fetchSupabaseProjects(currentUser.googleId);
+    if (Array.isArray(supabaseProjects)) {
+      return sendJson(res, supabaseProjects.map((p: any) => ({ id: p.id, name: p.name, description: p.description, prompt: p.prompt, createdAt: p.createdAt, deploymentsCount: p.deployments?.length || 0 })));
+    }
+  }
   const list = getProjects().map((p: any) => ({ id: p.id, name: p.name, description: p.description, prompt: p.prompt, createdAt: p.createdAt, deploymentsCount: p.deployments?.length || 0 }));
   return sendJson(res, list);
 }
 
-function handleProjectById(res: any, id: string) {
+async function handleProjectById(req: any, res: any, id: string) {
+  const currentUser = getAuthenticatedRequestUser(req, req.body);
+  if (supabaseClient && currentUser) {
+    const supabaseProject = await fetchSupabaseProjectById(id, currentUser.googleId);
+    if (supabaseProject) {
+      return sendJson(res, supabaseProject);
+    }
+  }
   const projects = getProjects();
   const project = projects.find((p: any) => p.id === id);
   if (!project) return sendJson(res, { error: "Project not found" }, 404);
   return sendJson(res, project);
 }
 
-function handleProjectDeploy(req: any, res: any, id: string, body: any) {
+async function handleProjectDeploy(req: any, res: any, id: string, body: any) {
   const targetPlatform = body?.targetPlatform || "Vercel";
   const projects = getProjects();
   const projectIndex = projects.findIndex((p: any) => p.id === id);
@@ -1701,13 +1844,29 @@ function handleProjectDeploy(req: any, res: any, id: string, body: any) {
   };
   if (!project.deployments) project.deployments = [];
   project.deployments.unshift(deployRecord);
+  const currentUser = getAuthenticatedRequestUser(req, body);
+  if (supabaseClient && currentUser) {
+    project.updatedAt = new Date().toISOString();
+    const updatedProject = await updateProjectInSupabase(project, currentUser);
+    if (updatedProject) {
+      saveProjects(projects);
+      return sendJson(res, { project: updatedProject, deployment: deployRecord });
+    }
+  }
   saveProjects(projects);
   return sendJson(res, { project, deployment: deployRecord });
 }
 
-async function handleProjectDownload(res: any, id: string) {
+async function handleProjectDownload(req: any, res: any, id: string) {
+  let project: any = null;
+  const currentUser = getAuthenticatedRequestUser(req, req.body);
+  if (supabaseClient && currentUser) {
+    project = await fetchSupabaseProjectById(id, currentUser.googleId);
+  }
   const projects = getProjects();
-  const project = projects.find((p: any) => p.id === id);
+  if (!project) {
+    project = projects.find((p: any) => p.id === id);
+  }
   if (!project) return sendJson(res, { error: "Project not found" }, 404);
 
   try {
@@ -1781,12 +1940,12 @@ export default async function handler(req: any, res: any) {
     if (endpoint === "user-state/reset" && method === "POST") return handleResetUserState(res);
     if (endpoint === "analyze-prompt" && method === "POST") return handleAnalyzePromptRoute(req, res, body);
     if (endpoint === "sri-ai" && method === "POST") return handleSriAi(req, res, body);
-    if (endpoint === "generate" && method === "POST") return handleGenerate(res, body);
-    if (endpoint === "refine" && method === "POST") return handleRefine(res, body);
-    if (endpoint === "projects" && method === "GET") return handleProjectsList(res);
-    if (segments[0] === "projects" && segments.length === 2 && method === "GET") return handleProjectById(res, segments[1]);
-    if (segments[0] === "projects" && segments.length === 3 && segments[2] === "deploy" && method === "POST") return handleProjectDeploy(req, res, segments[1], body);
-    if (segments[0] === "projects" && segments.length === 3 && segments[2] === "download" && method === "GET") return handleProjectDownload(res, segments[1]);
+    if (endpoint === "generate" && method === "POST") return await handleGenerate(req, res, body);
+    if (endpoint === "refine" && method === "POST") return await handleRefine(req, res, body);
+    if (endpoint === "projects" && method === "GET") return await handleProjectsList(req, res);
+    if (segments[0] === "projects" && segments.length === 2 && method === "GET") return await handleProjectById(req, res, segments[1]);
+    if (segments[0] === "projects" && segments.length === 3 && segments[2] === "deploy" && method === "POST") return await handleProjectDeploy(req, res, segments[1], body);
+    if (segments[0] === "projects" && segments.length === 3 && segments[2] === "download" && method === "GET") return await handleProjectDownload(req, res, segments[1]);
 
     return sendJson(res, { error: "Endpoint not found" }, 404);
   } catch (err: any) {

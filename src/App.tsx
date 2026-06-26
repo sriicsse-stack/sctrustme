@@ -687,7 +687,7 @@ export default function App() {
 
   const fetchProjects = async () => {
     try {
-      const res = await fetch("/api/projects");
+      const res = await fetch("/api/projects", { credentials: "include" });
       const data = await res.json();
       if (Array.isArray(data)) {
         setProjectsList(data);
@@ -699,7 +699,7 @@ export default function App() {
 
   const fetchUserState = async () => {
     try {
-      const res = await fetch("/api/user-state");
+      const res = await fetch("/api/user-state", { credentials: "include" });
       const data = await res.json();
       if (data && !data.error) {
         setUserState({
@@ -739,6 +739,7 @@ export default function App() {
     try {
       const res = await fetch("/api/referral/apply", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           referrerCode: pendingCode,
@@ -831,7 +832,7 @@ export default function App() {
     setIsGenerating(false);
     setIsRefining(false);
     try {
-      const res = await fetch(`/api/projects/${id}`);
+      const res = await fetch(`/api/projects/${id}`, { credentials: "include" });
       const data = await res.json();
       if (data && !data.error) {
         setCurrentProject(data);
@@ -919,6 +920,7 @@ export default function App() {
       console.debug("[App] handleConfirmBuild", { promptToGen });
       const res = await fetch("/api/generate", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           prompt: promptToGen,
@@ -1024,6 +1026,7 @@ export default function App() {
     try {
       const res = await fetch("/api/refine", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectId: currentProject.id,
@@ -1060,6 +1063,7 @@ export default function App() {
     try {
       const res = await fetch("/api/refine", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectId: currentProject.id,
@@ -1120,6 +1124,7 @@ export default function App() {
         try {
           const res = await fetch(`/api/projects/${currentProject.id}/deploy`, {
             method: "POST",
+            credentials: "include",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ targetPlatform: platformName })
           });
@@ -1164,6 +1169,7 @@ export default function App() {
       const isOfferRedeemed = info?.isOfferRedeemed || false;
       const res = await fetch("/api/user-state/change-plan", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           plan: planName,
@@ -1191,7 +1197,7 @@ export default function App() {
   const handleResetUserState = async () => {
     if (!confirm("Are you sure you want to reset your limits, credits and app counters?")) return;
     try {
-      const res = await fetch("/api/user-state/reset", { method: "POST" });
+      const res = await fetch("/api/user-state/reset", { method: "POST", credentials: "include" });
       const data = await res.json();
       if (data && !data.error) {
         setUserState(data);
@@ -1712,6 +1718,7 @@ export default function App() {
         addVoiceLog("AI Request Sent", "info");
         const genRes = await fetch("/api/generate", {
           method: "POST",
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ specs: specData })
         });
@@ -1793,6 +1800,7 @@ export default function App() {
       addVoiceLog("AI Request Sent", "info");
       const res = await fetch("/api/sri-ai", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
@@ -1846,6 +1854,7 @@ export default function App() {
     try {
       const res = await fetch("/api/refine", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectId: currentProject.id,

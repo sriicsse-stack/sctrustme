@@ -133,7 +133,7 @@ export default function SriAICore({
     setIsThinking(true);
 
     try {
-      const history = memoryRef.current.getMessages(20).map(msg => ({ role: msg.role, text: msg.content }));
+      const history = memoryRef.current.getMessages(20).map(msg => ({ role: msg.role === 'user' ? 'user' : 'assistant', text: msg.content }));
       const response = await fetch('/api/sri-ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -152,16 +152,18 @@ export default function SriAICore({
         throw new Error(data.error);
       }
 
-      const reply = typeof data.reply === 'string' ? data.reply : '';
-      const replyLang = detectLanguage(reply || text);
-      const sriMsg = memoryRef.current.addMessage('sri', reply, replyLang);
+      const reply = typeof data.reply === 'string' ? data.reply.trim() : '';
+      const finalReply = reply || "I couldn't generate a useful response just now. Please try again with more detail or ask in a different way.";
+      const replyLang = detectLanguage(finalReply);
+      setCurrentLanguage(replyLang);
+      const sriMsg = memoryRef.current.addMessage('sri', finalReply, replyLang);
       setMessages(prev => [...prev, sriMsg]);
 
-      if (mode === 'voice' && reply) {
-        speakText(reply, replyLang);
+      if (mode === 'voice' && finalReply) {
+        speakText(finalReply, replyLang);
       }
     } catch (error: any) {
-      const message = error?.message || 'Unknown AI provider error.';
+      const message = error?.message || 'Sri is having trouble connecting to the AI service right now.';
       setErrorMessage(message);
       const errorMsg = memoryRef.current.addMessage('sri', `Error: ${message}`, 'en');
       setMessages(prev => [...prev, errorMsg]);
@@ -205,18 +207,18 @@ export default function SriAICore({
   return (
     <main className="flex-1 max-w-7xl mx-auto w-full px-6 py-8 flex flex-col gap-6">
       {/* Header with Mode Switcher */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
           <div className="rounded-full bg-gradient-to-r from-blue-500 to-purple-600 p-3">
             <MessageSquare className="h-6 w-6 text-white" />
           </div>
-          <div>
-            <h1 className="text-3xl font-black text-white">Sri AI Core System</h1>
+          <div className="min-w-0">
+            <h1 className="text-3xl font-black text-white truncate">Sri AI Core System</h1>
             <p className="text-sm text-slate-400 mt-1">Your Human-Like AI Teammate & Co-Developer</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3 justify-end">
           {/* Language Indicator */}
           <div className="rounded-3xl border border-slate-800 bg-slate-950 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-300">
             {getLanguageName(currentLanguage)}
@@ -258,20 +260,20 @@ export default function SriAICore({
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6">
         {/* Main Chat Area */}
-        <div className="rounded-3xl border border-slate-800/80 bg-slate-950/80 p-6 shadow-xl flex flex-col h-[600px]">
+        <div className="rounded-3xl border border-slate-800/80 bg-slate-950/80 p-6 shadow-xl flex flex-col h-full min-h-[520px] max-h-[calc(100vh-180px)]">
           {/* Status Bar */}
-          <div className="flex items-center gap-3 mb-4 pb-4 border-b border-slate-800/50">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap items-start sm:items-center gap-3 mb-4 pb-4 border-b border-slate-800/50">
+            <div className="flex items-center gap-2 min-w-0">
               <div className={`h-2 w-2 rounded-full ${googleAuthStatus === 'connected' ? 'bg-emerald-500' : 'bg-yellow-500'}`} />
-              <span className="text-[10px] text-slate-400">Google Auth: {googleAuthStatus}</span>
+              <span className="text-[10px] text-slate-400 truncate">Google Auth: {googleAuthStatus}</span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 min-w-0">
               <div className={`h-2 w-2 rounded-full ${supabaseStatus === 'connected' ? 'bg-emerald-500' : 'bg-yellow-500'}`} />
-              <span className="text-[10px] text-slate-400">Supabase: {supabaseStatus}</span>
+              <span className="text-[10px] text-slate-400 truncate">Supabase: {supabaseStatus}</span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 min-w-0">
               <div className={`h-2 w-2 rounded-full ${razorpayStatus === 'connected' ? 'bg-emerald-500' : 'bg-yellow-500'}`} />
-              <span className="text-[10px] text-slate-400">Razorpay: {razorpayStatus}</span>
+              <span className="text-[10px] text-slate-400 truncate">Razorpay: {razorpayStatus}</span>
             </div>
           </div>
 
@@ -286,7 +288,7 @@ export default function SriAICore({
             {messages.map((msg) => (
               <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div
-                  className={`max-w-xs lg:max-w-md px-4 py-3 rounded-3xl text-sm leading-relaxed ${
+                  className={`max-w-[85%] lg:max-w-md px-4 py-3 rounded-3xl text-sm leading-relaxed whitespace-pre-wrap break-words ${
                     msg.role === 'user'
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-900 border border-slate-800 text-slate-200'
@@ -317,7 +319,7 @@ export default function SriAICore({
           <div className="border-t border-slate-800/50 pt-4">
             {mode === 'chat' ? (
               // Chat Input
-              <div className="flex gap-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                 <input
                   type="text"
                   value={inputValue}
@@ -329,7 +331,7 @@ export default function SriAICore({
                 <button
                   onClick={() => handleSendMessage()}
                   disabled={!inputValue.trim() || isThinking}
-                  className="rounded-3xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 px-4 py-3 text-white font-semibold transition-colors"
+                  className="w-full sm:w-auto rounded-3xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 px-4 py-3 text-white font-semibold transition-colors"
                 >
                   <Send className="h-5 w-5" />
                 </button>
@@ -337,7 +339,7 @@ export default function SriAICore({
             ) : (
               // Voice Input
               <div className="flex gap-3 flex-col">
-                <div className="flex gap-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                   <input
                     type="text"
                     value={inputValue}
@@ -347,7 +349,7 @@ export default function SriAICore({
                   />
                   <button
                     onClick={toggleVoiceRecognition}
-                    className={`rounded-3xl px-4 py-3 font-semibold transition-colors flex items-center gap-2 ${
+                    className={`w-full sm:w-auto rounded-3xl px-4 py-3 font-semibold transition-colors flex items-center gap-2 ${
                       isListening
                         ? 'bg-red-600 hover:bg-red-700 text-white'
                         : 'bg-purple-600 hover:bg-purple-700 text-white'
@@ -387,7 +389,7 @@ export default function SriAICore({
 
         {/* Right Sidebar - Task Queue & Status */}
         {showTaskQueue && (
-          <div className="rounded-3xl border border-slate-800/80 bg-slate-950/80 p-6 shadow-xl flex flex-col gap-4 h-[600px]">
+          <div className="rounded-3xl border border-slate-800/80 bg-slate-950/80 p-6 shadow-xl flex flex-col gap-4 h-full min-h-[360px] max-h-[calc(100vh-200px)] overflow-hidden">
             <div>
               <h2 className="text-lg font-bold text-white mb-2">Project Progress</h2>
               <div className="bg-slate-900 rounded-2xl p-4">

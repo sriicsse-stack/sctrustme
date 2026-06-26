@@ -7,11 +7,31 @@ import dotenv from "dotenv";
 import JSZip from "jszip";
 import Razorpay from "razorpay";
 import crypto from "crypto";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
 const app = express();
 const PORT = 3000;
+
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const isSupabaseConfigured = Boolean(
+  SUPABASE_URL && SUPABASE_SERVICE_KEY && SUPABASE_SERVICE_KEY !== "YOUR_SUPABASE_SERVICE_ROLE_KEY"
+);
+const supabaseService = isSupabaseConfigured
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, { auth: { persistSession: false } })
+  : null;
+
+function logSupabaseStatus() {
+  if (isSupabaseConfigured) {
+    console.log("✅ Supabase service client configured");
+  } else {
+    console.warn("⚠️ Supabase service client is not configured. Falling back to local JSON persistence.");
+  }
+}
+
+logSupabaseStatus();
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -34,6 +54,110 @@ function getProjects() {
 
 function saveProjects(projects: any[]) {
   fs.writeFileSync(PROJECTS_FILE, JSON.stringify(projects, null, 2));
+}
+
+const SUPABASE_PROJECT_TABLE = "projects";
+
+function convertSupabaseProject(record: any) {
+  if (!record) return null;
+  return {
+    id: record.id,
+    ownerId: record.owner_id,
+    name: record.name,
+    description: record.description,
+    prompt: record.prompt,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+    previewHtml: record.preview_html,
+    deployments: record.deployments || [],
+    files: record.files || [],
+    analysis: record.analysis || null,
+    autoDiagnosticReport: record.auto_diagnostic_report || null,
+  };
+}
+
+async function fetchSupabaseProjects(userId: string) {
+  if (!supabaseService || !userId) return null;
+  const { data, error } = await supabaseService
+    .from(SUPABASE_PROJECT_TABLE)
+    .select("*")
+    .eq("owner_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.warn("Supabase fetch projects error:", error);
+    return null;
+  }
+  return (data || []).map(convertSupabaseProject).filter(Boolean);
+}
+
+async function fetchSupabaseProjectById(projectId: string, userId?: string) {
+  if (!supabaseService) return null;
+  let query = supabaseService.from(SUPABASE_PROJECT_TABLE).select("*").eq("id", projectId).limit(1);
+  if (userId) {
+    query = query.eq("owner_id", userId);
+  }
+  const { data, error } = await query;
+  if (error) {
+    console.warn("Supabase fetch project by id error:", error);
+    return null;
+  }
+  const record = Array.isArray(data) ? data[0] : data;
+  return convertSupabaseProject(record);
+}
+
+async function saveProjectToSupabase(project: any, user: any) {
+  if (!supabaseService || !user?.googleId) return null;
+  const payload = {
+    id: project.id,
+    owner_id: user.googleId,
+    name: project.name,
+    description: project.description,
+    prompt: project.prompt,
+    preview_html: project.previewHtml,
+    deployments: project.deployments || [],
+    files: project.files || [],
+    analysis: project.analysis || null,
+    auto_diagnostic_report: project.autoDiagnosticReport || null,
+    created_at: project.createdAt || new Date().toISOString(),
+    updated_at: project.updatedAt || new Date().toISOString(),
+  };
+
+  const { data, error } = await supabaseService.from(SUPABASE_PROJECT_TABLE).upsert(payload).select().single();
+  if (error) {
+    console.warn("Supabase save project error:", error);
+    return null;
+  }
+  return convertSupabaseProject(data);
+}
+
+async function updateProjectInSupabase(project: any, user: any) {
+  if (!supabaseService || !user?.googleId) return null;
+  const payload = {
+    name: project.name,
+    description: project.description,
+    prompt: project.prompt,
+    preview_html: project.previewHtml,
+    deployments: project.deployments || [],
+    files: project.files || [],
+    analysis: project.analysis || null,
+    auto_diagnostic_report: project.autoDiagnosticReport || null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabaseService
+    .from(SUPABASE_PROJECT_TABLE)
+    .update(payload)
+    .eq("id", project.id)
+    .eq("owner_id", user.googleId)
+    .select()
+    .single();
+
+  if (error) {
+    console.warn("Supabase update project error:", error);
+    return null;
+  }
+  return convertSupabaseProject(data);
 }
 
 // Helper to load/save user state (billing, credits, referrals)
@@ -95,12 +219,14 @@ let aiClient: GoogleGenAI | null = null;
 const GEMINI_PRIMARY_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-2.0-flash";
 const GEMINI_RETRY_COUNT = 4;
+const GEMINI_REQUEST_TIMEOUT_MS = Math.max(10000, Number(process.env.GEMINI_REQUEST_TIMEOUT_MS || 18000) || 18000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 if (apiKey && apiKey !== "MY_GEMINI_API_KEY") {
   aiClient = new GoogleGenAI({
     apiKey: apiKey,
     httpOptions: {
+      timeout: GEMINI_REQUEST_TIMEOUT_MS,
       headers: {
         "User-Agent": "aistudio-build",
       },
@@ -126,36 +252,43 @@ async function geminiGenerateContent(payload: any, attempt = 1): Promise<any> {
 
   const model = payload.model || GEMINI_PRIMARY_MODEL;
   const effectiveModel = attempt === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : model;
+  const requestConfig = {
+    ...(payload.config || {}),
+    httpOptions: {
+      ...(payload.config?.httpOptions || {}),
+      timeout: GEMINI_REQUEST_TIMEOUT_MS,
+    },
+  };
+
   try {
-    return await aiClient.models.generateContent({ ...payload, model: effectiveModel });
+    return await aiClient.models.generateContent({ ...payload, model: effectiveModel, config: requestConfig });
   } catch (err: any) {
     const message = String(err?.message || err || "");
     const code = err?.code || err?.status || err?.statusCode;
     const isQuotaExceeded = /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(message) || code === 429;
-    const isRetryable = /503|UNAVAILABLE|high demand|service unavailable/i.test(message) || code === 503;
+    const isTimeout = /timeout|timed out|AbortError|ECONNRESET|ENOTFOUND|EAI_AGAIN|504|408/i.test(message) || code === 408 || code === 504;
+    const isRetryable = isTimeout || /503|UNAVAILABLE|high demand|service unavailable/i.test(message) || code === 503;
     const isModelNotFound = /not found|NOT_FOUND|is not found|not supported|unsupported/i.test(message);
 
-    // Handle quota exceeded
+    console.error(`[Gemini Error] Model: ${effectiveModel}, Attempt: ${attempt}/${GEMINI_RETRY_COUNT}, Code: ${code}, Message: ${message}`);
+
     if (isQuotaExceeded && attempt < GEMINI_RETRY_COUNT) {
       const nextModel = attempt + 1 === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : effectiveModel;
       console.warn(`⚠️ Quota exceeded on model ${effectiveModel} (attempt ${attempt}/${GEMINI_RETRY_COUNT}). Retrying with ${nextModel}...`);
-      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Longer backoff for quota
+      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
       return geminiGenerateContent({ ...payload, model: nextModel }, attempt + 1);
     }
 
     if (attempt < GEMINI_RETRY_COUNT) {
       if (isModelNotFound && effectiveModel !== GEMINI_FALLBACK_MODEL) {
-        console.warn(
-          `Gemini model ${effectiveModel} is unavailable for this API version. Switching to fallback model ${GEMINI_FALLBACK_MODEL}.`,
-          message
-        );
+        console.warn(`Gemini model ${effectiveModel} is unavailable. Switching to fallback model ${GEMINI_FALLBACK_MODEL}.`);
         return geminiGenerateContent({ ...payload, model: GEMINI_FALLBACK_MODEL }, attempt + 1);
       }
-
       if (isRetryable) {
         const nextModel = attempt + 1 === GEMINI_RETRY_COUNT ? GEMINI_FALLBACK_MODEL : effectiveModel;
-        console.warn(`Gemini request failed on model ${effectiveModel} (attempt ${attempt}). Retrying with ${nextModel}...`, message);
-        await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+        const backoffMs = Math.min(3000, 600 * attempt);
+        console.warn(`Gemini request failed (attempt ${attempt}). Retrying with model ${nextModel} after ${backoffMs}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
         return geminiGenerateContent({ ...payload, model: nextModel }, attempt + 1);
       }
     }
@@ -290,6 +423,13 @@ function getAuthenticatedRequestUser(req: any, body: any = {}) {
   }
   if (!currentUser && body?.currentUser && body.currentUser.googleId && body.currentUser.email) {
     currentUser = body.currentUser;
+  }
+  if (!currentUser && body?.supabaseSession?.user) {
+    currentUser = {
+      googleId: body.supabaseSession.user.id,
+      email: body.supabaseSession.user.email,
+      name: body.supabaseSession.user.user_metadata?.full_name || body.supabaseSession.user.email,
+    };
   }
   return currentUser;
 }
@@ -1754,7 +1894,7 @@ CRITICAL INSTRUCTIONS:
     // Perform thorough Error Detection AND Self-Healing Auto-Fix System checks
     const { repairedProject, diagnosticReport } = await performValidationAndSelfHealing(generated, prompt);
 
-    // Save project in persistent json list
+    // Save project in persistent local JSON list or to Supabase if configured for authenticated users.
     const projects = getProjects();
     const newProject = {
       id: "proj_" + Math.random().toString(36).substring(2, 9),
@@ -1766,8 +1906,18 @@ CRITICAL INSTRUCTIONS:
       previewHtml: repairedProject.previewHtml,
       autoDiagnosticReport: diagnosticReport,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       deployments: []
     };
+
+    const currentUser = getAuthenticatedRequestUser(req, req.body);
+    if (supabaseService && currentUser) {
+      const saved = await saveProjectToSupabase(newProject, currentUser);
+      if (saved) {
+        return res.json(saved);
+      }
+    }
+
     projects.push(newProject);
     saveProjects(projects);
 
@@ -1870,7 +2020,16 @@ Ensure:
     targetProject.files = repairedProject.files;
     targetProject.previewHtml = repairedProject.previewHtml;
     targetProject.autoDiagnosticReport = diagnosticReport;
-    
+    targetProject.updatedAt = new Date().toISOString();
+
+    const currentUser = getAuthenticatedRequestUser(req, req.body);
+    if (supabaseService && currentUser) {
+      const updated = await updateProjectInSupabase(targetProject, currentUser);
+      if (updated) {
+        return res.json(updated);
+      }
+    }
+
     // Save updated project list
     saveProjects(projects);
 
@@ -1882,7 +2041,22 @@ Ensure:
 });
 
 // API: List saved projects
-app.get("/api/projects", (req, res) => {
+app.get("/api/projects", async (req, res) => {
+  const currentUser = getAuthenticatedRequestUser(req, req.body);
+  if (supabaseService && currentUser) {
+    const supabaseProjects = await fetchSupabaseProjects(currentUser.googleId);
+    if (Array.isArray(supabaseProjects)) {
+      return res.json(supabaseProjects.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        prompt: p.prompt,
+        createdAt: p.createdAt,
+        deploymentsCount: p.deployments?.length || 0
+      })));
+    }
+  }
+
   const list = getProjects().map((p: any) => ({
     id: p.id,
     name: p.name,
@@ -1895,7 +2069,15 @@ app.get("/api/projects", (req, res) => {
 });
 
 // API: Get single project details
-app.get("/api/projects/:id", (req, res) => {
+app.get("/api/projects/:id", async (req, res) => {
+  const currentUser = getAuthenticatedRequestUser(req, req.body);
+  if (supabaseService && currentUser) {
+    const supabaseProject = await fetchSupabaseProjectById(req.params.id, currentUser.googleId);
+    if (supabaseProject) {
+      return res.json(supabaseProject);
+    }
+  }
+
   const projects = getProjects();
   const project = projects.find((p: any) => p.id === req.params.id);
   if (!project) {
@@ -1982,8 +2164,18 @@ app.post("/api/projects/:id/deploy", (req, res) => {
     project.deployments = [];
   }
   project.deployments.unshift(deployRecord);
-  saveProjects(projects);
 
+  const currentUser = getAuthenticatedRequestUser(req, req.body);
+  if (supabaseService && currentUser) {
+    project.updatedAt = new Date().toISOString();
+    const updatedProject = await updateProjectInSupabase(project, currentUser);
+    if (updatedProject) {
+      saveProjects(projects);
+      return res.json({ project: updatedProject, deployment: deployRecord });
+    }
+  }
+
+  saveProjects(projects);
   res.json({
     project,
     deployment: deployRecord
@@ -2027,9 +2219,18 @@ app.get("/deploy/:deployId", (req, res) => {
 
 // API: Download complete package as ZIP
 app.get("/api/projects/:id/download", async (req, res) => {
+  const currentUser = getAuthenticatedRequestUser(req, req.body);
+  let project: any = null;
+
+  if (supabaseService && currentUser) {
+    project = await fetchSupabaseProjectById(req.params.id, currentUser.googleId);
+  }
+
   const projects = getProjects();
-  const project = projects.find((p: any) => p.id === req.params.id);
-  
+  if (!project) {
+    project = projects.find((p: any) => p.id === req.params.id);
+  }
+
   if (!project) {
     return res.status(404).json({ error: "Project not found" });
   }
