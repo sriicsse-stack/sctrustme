@@ -1,0 +1,19 @@
+{
+  "credits": 40,
+  "appCreationsCount": 3,
+  "deploymentsCount": 0,
+  "referralCode": "SRI777",
+  "referrals": [
+    {
+      "id": "ref_da0x4",
+      "friend": "Sanjay S (ZM8)",
+      "action": "Friend Live Deploy",
+      "reward": 20,
+      "timestamp": "2026-06-23T07:43:12.334Z"
+    }
+  ],
+  "plan": "Free",
+  "offerRedeemed": false,
+  "offerSignupTime": "2026-06-24T20:15:07.268Z",
+  "offerPopupShown": true
+}
